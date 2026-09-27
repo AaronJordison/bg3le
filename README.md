@@ -194,10 +194,15 @@ undefined symbols allowed, because it has to interpose the engine's own, so a
 missing definition of *ours* builds cleanly and then kills the game at the
 first call. That has happened three times.
 
-And two that need the game running with bg3le attached:
+And three that need the game running with bg3le attached:
 
+    ./tools/check-api.sh            # every function upstream registers, both contexts
     ./tools/check-reference.sh      # bg3le against the real extender's output
     ./tools/run-upstream-tests.sh [bg3se checkout]   # bg3se's own Lua tests
+
+`check-api.sh` checks `reference/upstream-api.txt`, which
+`tools/upstream-api.py` generates from a bg3se checkout's module
+declarations; regenerate it when upstream adds functions.
 
 `reference/*.txt` is output captured from the Script Extender on Windows, and
 that replays the same queries here and reports how far apart the answers are.

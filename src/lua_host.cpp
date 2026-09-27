@@ -15212,9 +15212,8 @@ local function context_view(base, omit)
       return base[key]
     end,
 
-    -- Iterating a module is how a mod discovers what is there, and how
-    -- tools/api-coverage.lua counts, so the view has to enumerate as the
-    -- real one does.
+    -- Iterating a module is how a mod discovers what is there, so the view
+    -- has to enumerate as the real one does.
     __pairs = function()
       local keys = {}
       for key in pairs(base) do
