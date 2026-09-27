@@ -145,6 +145,9 @@ struct RPGStats : public ProtectedGameObject<RPGStats>
     Modifier* CurrentParsedType;
     TreasureTable* CurrentTreasureTable;
     TreasureCategory* CurrentTreasureCategory;
+    // bg3le: this build has a fifth pointer before RNG; everything from
+    // ExtraData on sat 8 bytes early without it.
+    [[bg3::hidden]] void* field_280_bg3le;
     uint64_t RNG[5];
     HashMap<FixedString, float>* ExtraData;
     LegacyMap<FixedString, FixedString> CategoryMappings;

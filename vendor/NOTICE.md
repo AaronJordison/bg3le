@@ -427,6 +427,15 @@ instead of dereferencing the missing manager. The bridge,
 `src/vendor/bg3le_noesis_lua.inl`, is included at the end so it can use
 upstream's class cache and custom-type builder.
 
+**`GameDefinitions/Stats/Stats.h` — `RPGStats` has a fifth pointer before
+`RNG`.** Between `StatsFunctors` (at +0x248 as declared) and `ExtraData` this
+build holds ten words where the declaration has nine, so every member from
+`ExtraData` on sat 8 bytes early: `ExtraData` at +0x2b0, `TreasureRarities`
+at +0x328, `FixedStrings` at +0x348 and the four manager pointers at +0x398
+to +0x3b0 on the live object. `field_280_bg3le` puts them back;
+`src/vendor/stat_create.cpp` asserts the offsets and
+`tools/check-vendor-patches.py` checks the field is there.
+
 **`GameDefinitions/UI.h` — `UIStateMachine` has a map and a set more.** On
 this build a 0x40-byte map follows `field_130_MHM_Guid_pState` and a 0x30-byte
 set follows `field_1D0_pState`, so every field from there on sat 0x70 early:

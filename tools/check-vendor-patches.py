@@ -24,6 +24,8 @@ def grep_count(pattern, flags=0):
 CHECKS = [
     ("EntityHandleGenerator keeps ThreadStates at +0",
      lambda: "ThreadStates at +0x40 rather than +0" in text("BG3Extender/GameDefinitions/EntitySystem.h")),
+    ("RPGStats has this build's fifth pointer before RNG",
+     lambda: "field_280_bg3le" in text("BG3Extender/GameDefinitions/Stats/Stats.h")),
     ("UIStateMachine has this build's extra map and set",
      lambda: "field_170_bg3le" in text("BG3Extender/GameDefinitions/UI.h")
              and "field_240_bg3le" in text("BG3Extender/GameDefinitions/UI.h")

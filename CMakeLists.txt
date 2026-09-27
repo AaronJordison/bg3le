@@ -194,6 +194,7 @@ list(APPEND VENDOR_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/prototypes.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/stat_sync.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/stat_create.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/stats_sets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/string_keys.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/translated_strings.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/statics.cpp

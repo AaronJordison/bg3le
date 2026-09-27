@@ -508,6 +508,12 @@ extern "C" bool bg3le_fixed_string_hash(std::uint32_t id,
                                         std::uint32_t* out) {
     const CacheLock lock(string_cache_lock());
     if (out == nullptr) return false;
+    // Upstream's GetHash: the null string hashes to 0. RPGStats'
+    // TreasureCategories keys its unnamed first category that way.
+    if (id == bg3se::FixedStringBase::NullIndex) {
+        *out = 0;
+        return true;
+    }
 
     void* table = bg3le_string_table();
     if (table == nullptr) return false;

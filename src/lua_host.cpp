@@ -26,6 +26,7 @@
 #include "noesis_ui.h"
 #include "hook.h"
 #include "savegame.h"
+#include "stats_sets.h"
 #include "log.h"
 #include "vendor/ls_string.h"
 #include "vendor/mods.h"
@@ -4918,6 +4919,256 @@ int l_stats_take_loaded(lua_State* L) {
     return 1;
 }
 
+// ---- Ext.Stats' submodules; src/vendor/stats_sets.cpp ----
+namespace sets = bg3le::stats_sets;
+
+sets::Kind check_kind(lua_State* L, int index) {
+    const auto k = luaL_checkinteger(L, index);
+    if (k < 0 || k > (lua_Integer)sets::Kind::NameGroup) luaL_error(L, "bad stats set kind %d", (int)k);
+    return (sets::Kind)k;
+}
+
+// Ext._Internal.StatsSetAll(kind) -> {addresses}, type name
+int l_stats_set_all(lua_State* L) {
+    const auto kind = check_kind(L, 1);
+    const auto items = sets::all(kind);
+    lua_createtable(L, (int)items.size(), 0);
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        lua_pushinteger(L, (lua_Integer)(std::uintptr_t)items[i]);
+        lua_rawseti(L, -2, (lua_Integer)i + 1);
+    }
+    lua_pushstring(L, sets::type_name(kind));
+    return 2;
+}
+
+// Ext._Internal.StatsSetGet(kind, name) -> address, type name; or nil
+int l_stats_set_get(lua_State* L) {
+    const auto kind = check_kind(L, 1);
+    void* at = sets::get(kind, luaL_checkstring(L, 2));
+    if (at == nullptr) return 0;
+    lua_pushinteger(L, (lua_Integer)(std::uintptr_t)at);
+    lua_pushstring(L, sets::type_name(kind));
+    return 2;
+}
+
+// Ext._Internal.StatsSetCreate(kind, name) -> address, type name; or nil, why
+int l_stats_set_create(lua_State* L) {
+    const auto kind = check_kind(L, 1);
+    std::string why;
+    void* at = sets::create(kind, luaL_checkstring(L, 2), &why);
+    if (at == nullptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, why.c_str());
+        return 2;
+    }
+    lua_pushinteger(L, (lua_Integer)(std::uintptr_t)at);
+    lua_pushstring(L, sets::type_name(kind));
+    return 2;
+}
+
+void set_int(lua_State* L, char const* key, lua_Integer v) {
+    lua_pushinteger(L, v);
+    lua_setfield(L, -2, key);
+}
+void set_bool(lua_State* L, char const* key, bool v) {
+    lua_pushboolean(L, v ? 1 : 0);
+    lua_setfield(L, -2, key);
+}
+void set_str(lua_State* L, char const* key, std::string const& v) {
+    lua_pushlstring(L, v.data(), v.size());
+    lua_setfield(L, -2, key);
+}
+
+// Ext._Internal.StatsTreasureTableRead(name) -> upstream's serialized table, or nil
+int l_stats_treasure_table_read(lua_State* L) {
+    sets::Table t;
+    if (!sets::read_table(luaL_checkstring(L, 1), &t)) { lua_pushnil(L); return 1; }
+    const auto rarities = sets::rarities();
+    lua_newtable(L);
+    set_str(L, "Name", t.Name);
+    set_int(L, "MinLevel", t.MinLevel);
+    set_int(L, "MaxLevel", t.MaxLevel);
+    set_bool(L, "IgnoreLevelDiff", t.IgnoreLevelDiff);
+    set_bool(L, "UseTreasureGroupContainers", t.UseTreasureGroupContainers);
+    set_bool(L, "CanMerge", t.CanMerge);
+    lua_createtable(L, (int)t.SubTables.size(), 0);
+    for (std::size_t s = 0; s < t.SubTables.size(); ++s) {
+        auto const& sub = t.SubTables[s];
+        lua_newtable(L);
+        set_int(L, "TotalCount", sub.TotalCount);
+        set_int(L, "StartLevel", sub.StartLevel);
+        set_int(L, "EndLevel", sub.EndLevel);
+        lua_createtable(L, (int)sub.Categories.size(), 0);
+        for (std::size_t c = 0; c < sub.Categories.size(); ++c) {
+            auto const& cat = sub.Categories[c];
+            lua_newtable(L);
+            set_int(L, "Frequency", cat.Frequency);
+            if (!cat.Name.empty()) set_str(L, cat.IsTable ? "TreasureTable" : "TreasureCategory", cat.Name);
+            for (std::size_t r = 0; r < rarities.size() && r < 7; ++r) {
+                if (!rarities[r].empty()) set_int(L, rarities[r].c_str(), cat.Frequencies[r]);
+            }
+            lua_rawseti(L, -2, (lua_Integer)c + 1);
+        }
+        lua_setfield(L, -2, "Categories");
+        lua_createtable(L, (int)sub.DropCounts.size(), 0);
+        for (std::size_t d = 0; d < sub.DropCounts.size(); ++d) {
+            lua_newtable(L);
+            set_int(L, "Chance", sub.DropCounts[d].Chance);
+            set_int(L, "Amount", sub.DropCounts[d].Amount);
+            lua_rawseti(L, -2, (lua_Integer)d + 1);
+        }
+        lua_setfield(L, -2, "DropCounts");
+        lua_rawseti(L, -2, (lua_Integer)s + 1);
+    }
+    lua_setfield(L, -2, "SubTables");
+    return 1;
+}
+
+// Ext._Internal.StatsTreasureCategoryRead(name) -> upstream's serialized table, or nil
+int l_stats_treasure_category_read(lua_State* L) {
+    sets::Category c;
+    if (!sets::read_category(luaL_checkstring(L, 1), &c)) { lua_pushnil(L); return 1; }
+    lua_newtable(L);
+    set_str(L, "Category", c.Name);
+    lua_createtable(L, (int)c.Items.size(), 0);
+    for (std::size_t i = 0; i < c.Items.size(); ++i) {
+        auto const& item = c.Items[i];
+        lua_newtable(L);
+        set_str(L, "Name", item.Name);
+        set_int(L, "Priority", item.Priority);
+        set_int(L, "MinAmount", item.MinAmount);
+        set_int(L, "MaxAmount", item.MaxAmount);
+        set_int(L, "ActPart", item.ActPart);
+        set_int(L, "Unique", item.Unique);
+        set_int(L, "MinLevel", item.MinLevel);
+        set_int(L, "MaxLevel", item.MaxLevel);
+        lua_rawseti(L, -2, (lua_Integer)i + 1);
+    }
+    lua_setfield(L, -2, "Items");
+    return 1;
+}
+
+// A field of the table on top of the stack, as upstream's serializer reads
+// it: an optional one falls back to its default, a required one raises.
+lua_Integer field_int(lua_State* L, char const* key, bool required, lua_Integer fallback) {
+    lua_getfield(L, -1, key);
+    lua_Integer v = fallback;
+    if (lua_isnil(L, -1)) {
+        if (required) luaL_error(L, "Missing required property '%s'", key);
+    } else {
+        v = luaL_checkinteger(L, -1);
+    }
+    lua_pop(L, 1);
+    return v;
+}
+bool field_bool(lua_State* L, char const* key, bool fallback) {
+    lua_getfield(L, -1, key);
+    const bool v = lua_isnil(L, -1) ? fallback : lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    return v;
+}
+std::string field_str(lua_State* L, char const* key, bool required) {
+    lua_getfield(L, -1, key);
+    std::string v;
+    if (lua_isnil(L, -1)) {
+        if (required) luaL_error(L, "Missing required property '%s'", key);
+    } else {
+        v = luaL_checkstring(L, -1);
+    }
+    lua_pop(L, 1);
+    return v;
+}
+// Calls fn for each element of the array field, with that element on top.
+template <class Fn>
+void field_each(lua_State* L, char const* key, Fn fn) {
+    lua_getfield(L, -1, key);
+    if (lua_isnil(L, -1)) luaL_error(L, "Missing required property '%s'", key);
+    luaL_checktype(L, -1, LUA_TTABLE);
+    const lua_Integer n = luaL_len(L, -1);
+    for (lua_Integer i = 1; i <= n; ++i) {
+        lua_geti(L, -1, i);
+        luaL_checktype(L, -1, LUA_TTABLE);
+        fn();
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+}
+
+// Ext._Internal.StatsTreasureTableUpdate(table) -> true, or nil, why
+int l_stats_treasure_table_update(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const auto rarities = sets::rarities();
+    lua_pushvalue(L, 1);
+    sets::Table t;
+    t.Name = field_str(L, "Name", true);
+    t.MinLevel = (int)field_int(L, "MinLevel", false, 0);
+    t.MaxLevel = (int)field_int(L, "MaxLevel", false, 0);
+    t.IgnoreLevelDiff = field_bool(L, "IgnoreLevelDiff", false);
+    t.UseTreasureGroupContainers = field_bool(L, "UseTreasureGroupContainers", false);
+    t.CanMerge = field_bool(L, "CanMerge", false);
+    field_each(L, "SubTables", [&] {
+        sets::SubTable sub;
+        sub.TotalCount = (int)field_int(L, "TotalCount", true, 0);
+        sub.StartLevel = (int)field_int(L, "StartLevel", false, 0);
+        sub.EndLevel = (int)field_int(L, "EndLevel", false, 0);
+        field_each(L, "Categories", [&] {
+            sets::CategoryRef c;
+            c.Frequency = (int)field_int(L, "Frequency", false, 1);
+            const std::string table = field_str(L, "TreasureTable", false);
+            c.IsTable = !table.empty();
+            c.Name = c.IsTable ? table : field_str(L, "TreasureCategory", false);
+            for (std::size_t r = 0; r < rarities.size() && r < 7; ++r) {
+                if (!rarities[r].empty()) {
+                    c.Frequencies[r] = (std::uint16_t)field_int(L, rarities[r].c_str(), false, 0);
+                }
+            }
+            sub.Categories.push_back(std::move(c));
+        });
+        field_each(L, "DropCounts", [&] {
+            sets::DropCount d;
+            d.Chance = (int)field_int(L, "Chance", true, 0);
+            d.Amount = (int)field_int(L, "Amount", true, 0);
+            sub.DropCounts.push_back(d);
+        });
+        t.SubTables.push_back(std::move(sub));
+    });
+    lua_pop(L, 1);
+
+    std::string why;
+    if (!sets::update_table(t, &why)) {
+        return luaL_error(L, "%s", why.c_str());
+    }
+    return 0;
+}
+
+// Ext._Internal.StatsTreasureCategoryUpdate(name, table)
+int l_stats_treasure_category_update(lua_State* L) {
+    char const* name = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    lua_pushvalue(L, 2);
+    sets::Category c;
+    c.Name = name;
+    field_each(L, "Items", [&] {
+        sets::CategoryItem item;
+        item.Name = field_str(L, "Name", true);
+        item.Priority = (int)field_int(L, "Priority", false, 1);
+        item.MinAmount = (int)field_int(L, "MinAmount", false, 1);
+        item.MaxAmount = (int)field_int(L, "MaxAmount", false, 1);
+        item.ActPart = (int)field_int(L, "ActPart", true, 0);
+        item.Unique = (int)field_int(L, "Unique", false, 0);
+        item.MinLevel = (int)field_int(L, "MinLevel", false, 0);
+        item.MaxLevel = (int)field_int(L, "MaxLevel", false, 0);
+        c.Items.push_back(std::move(item));
+    });
+    lua_pop(L, 1);
+
+    std::string why;
+    if (!sets::update_category(name, c, &why)) {
+        return luaL_error(L, "%s", why.c_str());
+    }
+    return 0;
+}
+
 // Ext._Internal.StatsNameAt(index) -> name
 int l_stats_name_at(lua_State* L) {
     const auto i = (std::size_t)luaL_checkinteger(L, 1);
@@ -7559,6 +7810,20 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "StatOrigin");
     lua_pushcfunction(g_lua, l_stats_take_loaded);
     lua_setfield(g_lua, -2, "StatsTakeLoaded");
+    lua_pushcfunction(g_lua, l_stats_set_all);
+    lua_setfield(g_lua, -2, "StatsSetAll");
+    lua_pushcfunction(g_lua, l_stats_set_get);
+    lua_setfield(g_lua, -2, "StatsSetGet");
+    lua_pushcfunction(g_lua, l_stats_set_create);
+    lua_setfield(g_lua, -2, "StatsSetCreate");
+    lua_pushcfunction(g_lua, l_stats_treasure_table_read);
+    lua_setfield(g_lua, -2, "StatsTreasureTableRead");
+    lua_pushcfunction(g_lua, l_stats_treasure_category_read);
+    lua_setfield(g_lua, -2, "StatsTreasureCategoryRead");
+    lua_pushcfunction(g_lua, l_stats_treasure_table_update);
+    lua_setfield(g_lua, -2, "StatsTreasureTableUpdate");
+    lua_pushcfunction(g_lua, l_stats_treasure_category_update);
+    lua_setfield(g_lua, -2, "StatsTreasureCategoryUpdate");
     lua_pushcfunction(g_lua, l_stats_count);
     lua_setfield(g_lua, -2, "StatsCount");
     lua_pushcfunction(g_lua, l_stats_name_at);
@@ -13971,6 +14236,71 @@ end
 -- additions were simply lost.
 
 -- ---- the rest of Ext.Stats ----
+
+-- Upstream's submodules: SpellSet, EquipmentSet, TreasureTable,
+-- TreasureCategory, ItemCombo, ItemComboPreview, ItemComboProperty,
+-- ItemGroup and NameGroup, over the engine's managers
+-- (src/vendor/stats_sets.cpp). Get and GetAll hand out live objects.
+do
+  local I = Ext._Internal
+  local function object(addr, typeName)
+    if addr == nil then return nil end
+    return I.PointedObject(addr, typeName)
+  end
+  local function submodule(kind, withCreate, withGetAll)
+    local m = {}
+    function m.Get(name)
+      return object(I.StatsSetGet(kind, tostring(name)))
+    end
+    if withGetAll then
+      function m.GetAll()
+        local addrs, typeName = I.StatsSetAll(kind)
+        local out = {}
+        for i, a in ipairs(addrs) do out[i] = I.PointedObject(a, typeName) end
+        return out
+      end
+    end
+    if withCreate then
+      function m.Create(name)
+        local addr, typeName = I.StatsSetCreate(kind, tostring(name))
+        if addr == nil then error("bg3le: " .. tostring(typeName), 2) end
+        return I.PointedObject(addr, typeName)
+      end
+    end
+    return m
+  end
+
+  Ext.Stats.SpellSet = submodule(0, true, true)
+  Ext.Stats.EquipmentSet = submodule(1, true, true)
+  Ext.Stats.ItemCombo = submodule(4, true, true)
+  Ext.Stats.ItemComboPreview = submodule(5, true, true)
+  Ext.Stats.ItemComboProperty = submodule(6, true, true)
+  Ext.Stats.ItemGroup = submodule(7, false, true)
+  Ext.Stats.NameGroup = submodule(8, false, true)
+
+  Ext.Stats.TreasureTable = submodule(2, false, false)
+  function Ext.Stats.TreasureTable.GetLegacy(name)
+    return I.StatsTreasureTableRead(tostring(name))
+  end
+  -- Errors point at the caller, as upstream's do, not at this file.
+  local function forward(fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok then error((tostring(err):gsub("^bg3le prelude:%d+: ", "")), 3) end
+  end
+  function Ext.Stats.TreasureTable.Update(tbl)
+    if type(tbl) ~= "table" then error("Ext.Stats.TreasureTable.Update expects a table", 2) end
+    forward(I.StatsTreasureTableUpdate, tbl)
+  end
+
+  Ext.Stats.TreasureCategory = {}
+  function Ext.Stats.TreasureCategory.GetLegacy(name)
+    return I.StatsTreasureCategoryRead(tostring(name))
+  end
+  function Ext.Stats.TreasureCategory.Update(name, tbl)
+    if type(tbl) ~= "table" then error("Ext.Stats.TreasureCategory.Update expects a table", 2) end
+    forward(I.StatsTreasureCategoryUpdate, tostring(name), tbl)
+  end
+end
 
 -- The enumerations stats are written in terms of: "Damage Type",
 -- "AbilityType" and so on, each a value list the engine parsed.

@@ -52,7 +52,9 @@ structure was found, and what was measured, is in
 - **Stats**: every attribute kind reads and writes; `Create`, `Sync` for
   spells, statuses, interrupts and passives; functor execution and editing;
   `LoadStatsFile` and `SetRawAttribute` parse text as the engine's own
-  loader does.
+  loader does. Spell and equipment sets, treasure tables and categories,
+  item combinations and item and name groups read, and can be created or
+  updated as upstream allows.
 - **Game data**: `Ext.StaticData` (read, write, create), `Ext.Resource`,
   `Ext.Template`, `Ext.Loca`, and `Ext.Level`'s physics queries, AI grid,
   pathfinding and surface actions.
@@ -74,9 +76,6 @@ structure was found, and what was measured, is in
 ## Known gaps
 
 - **`Ext.Audio` is missing**, all 16 of upstream's client functions.
-- **`Ext.Stats`' submodules are missing**: `SpellSet`, `EquipmentSet`,
-  `ItemCombo`, `ItemComboPreview`, `ItemComboProperty`, `ItemGroup`,
-  `NameGroup`, `TreasureTable` and `TreasureCategory`.
 - Flatpak Steam is not supported by the installer yet: its sandbox cannot
   see `~/.local/share/bg3le`.
 - Two deliberate differences: a `require` after a mod has finished loading

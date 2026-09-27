@@ -47,6 +47,14 @@ static_assert(offsetof(Object, Using) == 0xe0);
 static_assert(offsetof(Object, ModifierListIndex) == 0xe4);
 static_assert(offsetof(Object, Level) == 0xe8);
 static_assert(offsetof(RPGStats, Objects) == 0xc0);
+// Measured on the live object; see field_280_bg3le in the vendored Stats.h.
+static_assert(offsetof(RPGStats, ExtraData) == 0x2b0);
+static_assert(offsetof(RPGStats, TreasureRarities) == 0x328);
+static_assert(offsetof(RPGStats, FixedStrings) == 0x348);
+static_assert(offsetof(RPGStats, TranslatedStrings) == 0x388);
+static_assert(offsetof(RPGStats, EquipmentSetManager) == 0x398);
+static_assert(offsetof(RPGStats, ItemCombinationManager) == 0x3b0);
+static_assert(offsetof(RPGStats, Conditions) == 0x410);
 static_assert(offsetof(Manager, Values) == 0x08);
 static_assert(offsetof(Manager, NameToHandle) == 0x18);
 static_assert(offsetof(Manager, NextHandle) == 0x58);
