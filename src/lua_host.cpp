@@ -619,6 +619,72 @@ int l_enum_value_at(lua_State* L) {
     return 2;
 }
 
+// ---- Ext.Audio; src/vendor/audio.cpp ----
+extern "C" bool bg3le_audio_ready();
+extern "C" bool bg3le_audio_builtin(char const* name, unsigned player, std::uint64_t* out);
+extern "C" bool bg3le_audio_set_switch(std::uint64_t obj, char const* group, char const* state);
+extern "C" bool bg3le_audio_set_state(char const* group, char const* state);
+extern "C" bool bg3le_audio_set_rtpc(std::uint64_t obj, char const* name, float value, bool bypass);
+extern "C" float bg3le_audio_get_rtpc(std::uint64_t obj, char const* name);
+extern "C" void bg3le_audio_reset_rtpc(std::uint64_t obj, char const* name);
+extern "C" void bg3le_audio_stop(bool all, std::uint64_t obj);
+extern "C" void bg3le_audio_pause_all(bool pause);
+extern "C" bool bg3le_audio_post_event(std::uint64_t obj, char const* name, float position);
+extern "C" bool bg3le_audio_event(char const* name, bool load);
+extern "C" bool bg3le_audio_play_external(std::uint64_t obj, char const* event, char const* path,
+                                          std::uint8_t codec, float position);
+extern "C" bool bg3le_audio_bank(char const* name, int op);
+
+std::uint64_t audio_object(lua_State* L, int index) {
+    return (std::uint64_t)luaL_checkinteger(L, index);
+}
+
+// Ext._Internal.Audio(op, ...) -- one entry per upstream function; the
+// prelude resolves sound objects to their ids first.
+int l_audio(lua_State* L) {
+    const std::string op = luaL_checkstring(L, 1);
+    if (!bg3le_audio_ready()) return luaL_error(L, "Sound manager is not available!");
+    if (op == "Builtin") {
+        std::uint64_t id = 0;
+        if (!bg3le_audio_builtin(luaL_checkstring(L, 2), (unsigned)luaL_checkinteger(L, 3), &id)) return 0;
+        lua_pushinteger(L, (lua_Integer)id);
+    } else if (op == "SetSwitch") {
+        lua_pushboolean(L, bg3le_audio_set_switch(audio_object(L, 2), luaL_checkstring(L, 3), luaL_checkstring(L, 4)));
+    } else if (op == "SetState") {
+        lua_pushboolean(L, bg3le_audio_set_state(luaL_checkstring(L, 2), luaL_checkstring(L, 3)));
+    } else if (op == "SetRTPC") {
+        lua_pushboolean(L, bg3le_audio_set_rtpc(audio_object(L, 2), luaL_checkstring(L, 3),
+                                                (float)luaL_checknumber(L, 4), lua_toboolean(L, 5) != 0));
+    } else if (op == "GetRTPC") {
+        lua_pushnumber(L, bg3le_audio_get_rtpc(audio_object(L, 2), luaL_checkstring(L, 3)));
+    } else if (op == "ResetRTPC") {
+        bg3le_audio_reset_rtpc(audio_object(L, 2), luaL_checkstring(L, 3));
+        return 0;
+    } else if (op == "Stop") {
+        const bool all = lua_isnoneornil(L, 2);
+        bg3le_audio_stop(all, all ? 0 : audio_object(L, 2));
+        return 0;
+    } else if (op == "PauseAllSounds" || op == "ResumeAllSounds") {
+        bg3le_audio_pause_all(op == "PauseAllSounds");
+        return 0;
+    } else if (op == "PostEvent") {
+        lua_pushboolean(L, bg3le_audio_post_event(audio_object(L, 2), luaL_checkstring(L, 3),
+                                                  (float)luaL_optnumber(L, 4, 0.0)));
+    } else if (op == "LoadEvent" || op == "UnloadEvent") {
+        lua_pushboolean(L, bg3le_audio_event(luaL_checkstring(L, 2), op == "LoadEvent"));
+    } else if (op == "PlayExternalSound") {
+        lua_pushboolean(L, bg3le_audio_play_external(audio_object(L, 2), luaL_checkstring(L, 3),
+                                                     luaL_checkstring(L, 4), (std::uint8_t)luaL_checkinteger(L, 5),
+                                                     (float)luaL_optnumber(L, 6, 0.0)));
+    } else if (op == "LoadBank" || op == "UnloadBank" || op == "PrepareBank" || op == "UnprepareBank") {
+        const int code = op == "LoadBank" ? 0 : op == "PrepareBank" ? 2 : 1;
+        lua_pushboolean(L, bg3le_audio_bank(luaL_checkstring(L, 2), code));
+    } else {
+        return luaL_error(L, "bad audio op %s", op.c_str());
+    }
+    return 1;
+}
+
 // Ext._Internal.InjectKey(down, scancode, modifiers) -- src/sdl_forward.cpp
 extern "C" void bg3le_sdl_inject_key(bool down, int scancode, int modifiers);
 int l_inject_key(lua_State* L) {
@@ -7555,6 +7621,8 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "RequestReset");
     lua_pushcfunction(g_lua, l_inject_key);
     lua_setfield(g_lua, -2, "InjectKey");
+    lua_pushcfunction(g_lua, l_audio);
+    lua_setfield(g_lua, -2, "Audio");
     lua_pushcfunction(g_lua, l_enum_count);
     lua_setfield(g_lua, -2, "EnumCount");
     lua_pushcfunction(g_lua, l_enum_at);
@@ -10754,6 +10822,63 @@ if Ext._Internal.IsClientState() then
   function Ext.Input.InjectKeyUp(key, modifiers)
     inject(false, key, modifiers, "Ext.Input.InjectKeyUp")
   end
+
+  -- Upstream's client Audio module; src/vendor/audio.cpp.
+  Ext.Audio = {}
+  local INVALID = -1  -- InvalidSoundObjectId, 0xffffffffffffffff
+
+  -- Upstream's GetSoundObjectId: nil or "Global" is no object, a built-in
+  -- name takes an optional player digit, an entity is its sound's object.
+  local function sound_object(v)
+    if v == nil then return INVALID end
+    if type(v) == "string" then
+      local name, player = v, 0
+      local last = v:sub(-1)
+      if #v > 1 and last >= "1" and last <= "4" then
+        player, name = tonumber(last) - 1, v:sub(1, -2)
+      end
+      if name == "Global" then return INVALID end
+      local id = Ext._Internal.Audio("Builtin", name, player)
+      if id == nil then error("Unknown built-in sound object name: " .. name, 3) end
+      return id
+    end
+    if type(v) == "userdata" and Ext._Internal.EntityProxyHandle(v) ~= nil then
+      local ok, id = pcall(function()
+        local s = v.Sound
+        return s ~= nil and s.ActiveData ~= nil and s.ActiveData.SoundObjectId or nil
+      end)
+      if ok and math.type(id) == "integer" then return id end
+      return INVALID
+    end
+    error("Must specify nil, entity handle or built-in name as sound object", 3)
+  end
+
+  local A = function(...) return Ext._Internal.Audio(...) end
+  function Ext.Audio.SetSwitch(obj, group, state) return A("SetSwitch", sound_object(obj), group, state) end
+  function Ext.Audio.SetState(group, state) return A("SetState", group, state) end
+  function Ext.Audio.SetRTPC(obj, name, value, bypass)
+    return A("SetRTPC", sound_object(obj), name, value, bypass == true)
+  end
+  function Ext.Audio.GetRTPC(obj, name) return A("GetRTPC", sound_object(obj), name) end
+  function Ext.Audio.ResetRTPC(obj, name) A("ResetRTPC", sound_object(obj), name) end
+  function Ext.Audio.Stop(obj)
+    if obj == nil then A("Stop") else A("Stop", sound_object(obj)) end
+  end
+  function Ext.Audio.PauseAllSounds() A("PauseAllSounds") end
+  function Ext.Audio.ResumeAllSounds() A("ResumeAllSounds") end
+  function Ext.Audio.PostEvent(obj, event, position)
+    return A("PostEvent", sound_object(obj), event, position)
+  end
+  function Ext.Audio.LoadEvent(event) return A("LoadEvent", event) end
+  function Ext.Audio.UnloadEvent(event) return A("UnloadEvent", event) end
+  function Ext.Audio.PlayExternalSound(obj, event, path, codec, position)
+    return A("PlayExternalSound", sound_object(obj), event, path,
+             enum_number("AudioCodec", codec, "Ext.Audio.PlayExternalSound"), position)
+  end
+  function Ext.Audio.LoadBank(bank) return A("LoadBank", bank) end
+  function Ext.Audio.UnloadBank(bank) return A("UnloadBank", bank) end
+  function Ext.Audio.PrepareBank(bank) return A("PrepareBank", bank) end
+  function Ext.Audio.UnprepareBank(bank) return A("UnprepareBank", bank) end
 end
 
 -- ---- Ext.UI ----

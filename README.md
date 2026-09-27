@@ -23,9 +23,10 @@ component's declared size with the size the engine recorded, and
 
 ## What works
 
-bg3le implements the public `Ext` API of bg3se on the native build, apart
-from the gaps listed below, and `tools/count-refusals.py` finds none that
-refuse.
+bg3le implements the public `Ext` API of bg3se on the native build: every
+function upstream registers is present in both contexts
+(`tools/check-api.sh`, against upstream's own module declarations), and
+`tools/count-refusals.py` finds none that refuse.
 It is checked against output captured from the Windows extender
 (`reference/`) and against upstream's own Lua tests. How each engine
 structure was found, and what was measured, is in
@@ -59,7 +60,9 @@ structure was found, and what was measured, is in
   `Ext.Template`, `Ext.Loca`, and `Ext.Level`'s physics queries, AI grid,
   pathfinding and surface actions.
 - **UI**: the `Ext.IMGUI` overlay (HDR-aware), `Ext.UI` on the game's own
-  Noesis, and input events.
+  Noesis, input events and key injection.
+- **Audio**: `Ext.Audio` over the game's Wwise: events, switches, states,
+  RTPCs, banks and external sounds.
 - **Files**: `Ext.IO` reads through the engine's own file reader and honours
   path overrides.
 - **Achievements with mods active**, as bg3se's `EnableAchievements` does.
@@ -75,7 +78,6 @@ structure was found, and what was measured, is in
 
 ## Known gaps
 
-- **`Ext.Audio` is missing**, all 16 of upstream's client functions.
 - Flatpak Steam is not supported by the installer yet: its sandbox cannot
   see `~/.local/share/bg3le`.
 - Two deliberate differences: a `require` after a mod has finished loading
