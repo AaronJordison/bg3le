@@ -23,9 +23,9 @@ component's declared size with the size the engine recorded, and
 
 ## What works
 
-bg3le implements the public `Ext` API of bg3se on the native build: every
-name upstream exposes is present (`tools/api-coverage.lua`), and
-`tools/count-refusals.py` finds none that refuse.
+bg3le implements the public `Ext` API of bg3se on the native build, apart
+from the gaps listed below, and `tools/count-refusals.py` finds none that
+refuse.
 It is checked against output captured from the Windows extender
 (`reference/`) and against upstream's own Lua tests. How each engine
 structure was found, and what was measured, is in
@@ -73,6 +73,10 @@ structure was found, and what was measured, is in
 
 ## Known gaps
 
+- **`Ext.Audio` is missing**, all 16 of upstream's client functions.
+- **`Ext.Stats`' submodules are missing**: `SpellSet`, `EquipmentSet`,
+  `ItemCombo`, `ItemComboPreview`, `ItemComboProperty`, `ItemGroup`,
+  `NameGroup`, `TreasureTable` and `TreasureCategory`.
 - Flatpak Steam is not supported by the installer yet: its sandbox cannot
   see `~/.local/share/bg3le`.
 - Two deliberate differences: a `require` after a mod has finished loading

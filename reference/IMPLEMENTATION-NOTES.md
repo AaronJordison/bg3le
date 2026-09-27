@@ -721,10 +721,12 @@ history since, and the README has the current summary.
 
 ## Known gaps at the time
 
-- **No `Ext.*` function refuses any more.** Every name bg3se exposes is
-  present — `tools/api-coverage.lua` reports 715 of 715 — and
-  `tools/count-refusals.py`, which counts the ones that raise instead of
-  answering, now finds none. What is left is in the smaller gaps below
+- **No `Ext.*` function refuses any more.** `tools/count-refusals.py`,
+  which counts the ones that raise instead of answering, finds none. The
+  "715 of 715" `tools/api-coverage.lua` reported then was wrong: its list
+  came from a server-side capture, which never sees client-only modules,
+  and it stopped two levels down, so `Ext.Audio`, `Ext.Input`'s key
+  injection and `Ext.Stats`' submodules were all missing unseen
 - **Stat writes and `Sync`.** Every attribute kind upstream
   writes is written, the way its `Object::Set*` writes it: integers and
   enumerations in place; conditions, strings, floats, GUIDs, flag sets and
