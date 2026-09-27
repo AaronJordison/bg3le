@@ -618,6 +618,14 @@ int l_enum_value_at(lua_State* L) {
     return 2;
 }
 
+// Ext._Internal.InjectKey(down, scancode, modifiers) -- src/sdl_forward.cpp
+extern "C" void bg3le_sdl_inject_key(bool down, int scancode, int modifiers);
+int l_inject_key(lua_State* L) {
+    bg3le_sdl_inject_key(lua_toboolean(L, 1) != 0, (int)luaL_checkinteger(L, 2),
+                         (int)luaL_optinteger(L, 3, 0));
+    return 0;
+}
+
 int l_has_other_context(lua_State* L) {
     lua_State* other = (L == g_client_lua) ? g_server_lua : g_client_lua;
     lua_pushboolean(L, other != nullptr ? 1 : 0);
@@ -7294,6 +7302,8 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "HasOtherContext");
     lua_pushcfunction(g_lua, l_request_reset);
     lua_setfield(g_lua, -2, "RequestReset");
+    lua_pushcfunction(g_lua, l_inject_key);
+    lua_setfield(g_lua, -2, "InjectKey");
     lua_pushcfunction(g_lua, l_enum_count);
     lua_setfield(g_lua, -2, "EnumCount");
     lua_pushcfunction(g_lua, l_enum_at);
@@ -10441,6 +10451,43 @@ if Ext._Internal.IsClientState() then
     local addr = Ext._Internal.InputManager()
     if addr == nil then return nil end
     return Ext._Internal.ReadObject(addr, "input::InputManager", "", {})
+  end
+
+  -- Upstream's InjectKey*: an SDLScanCode label or number, and optionally an
+  -- SDLKeyModifier label, list of labels or number.
+  local function enum_number(enum, value, what)
+    if type(value) == "number" then return math.tointeger(value) end
+    if type(value) == "table" then
+      local bits = 0
+      for _, label in ipairs(value) do bits = bits | enum_number(enum, label, what) end
+      return bits
+    end
+    if type(value) == "string" then
+      local i = 0
+      while true do
+        local label, n = Ext._Internal.EnumValueAt(enum, i)
+        if label == nil then break end
+        if label == value then return n end
+        i = i + 1
+      end
+    end
+    error(string.format("%s: not a %s: %s", what, enum, tostring(value)), 3)
+  end
+
+  local function inject(down, key, modifiers, what)
+    local mods = modifiers ~= nil and enum_number("SDLKeyModifier", modifiers, what) or 0
+    Ext._Internal.InjectKey(down, enum_number("SDLScanCode", key, what), mods)
+  end
+
+  function Ext.Input.InjectKeyPress(key, modifiers)
+    inject(true, key, modifiers, "Ext.Input.InjectKeyPress")
+    inject(false, key, modifiers, "Ext.Input.InjectKeyPress")
+  end
+  function Ext.Input.InjectKeyDown(key, modifiers)
+    inject(true, key, modifiers, "Ext.Input.InjectKeyDown")
+  end
+  function Ext.Input.InjectKeyUp(key, modifiers)
+    inject(false, key, modifiers, "Ext.Input.InjectKeyUp")
   end
 end
 

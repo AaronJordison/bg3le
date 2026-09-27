@@ -13,6 +13,11 @@
 
 #include <dlfcn.h>
 
+#include <atomic>
+#include <cstring>
+#include <deque>
+#include <mutex>
+
 #include <SDL.h>
 
 #include "log.h"
@@ -57,6 +62,22 @@ Fn real(char const* name) {
 }  // namespace
 
 namespace {
+
+// Ext.Input.InjectKey*'s events, handed out ahead of SDL's own as upstream's
+// SDLManager::InjectEvent does; like upstream's, they skip the input events.
+std::mutex g_inject_mutex;
+std::deque<SDL_Event> g_injected;
+std::atomic<bool> g_have_injected{false};
+
+bool take_injected(SDL_Event* event) {
+    if (!g_have_injected.load(std::memory_order_acquire)) return false;
+    std::lock_guard<std::mutex> lock(g_inject_mutex);
+    if (g_injected.empty()) return false;
+    *event = g_injected.front();
+    g_injected.pop_front();
+    g_have_injected.store(!g_injected.empty(), std::memory_order_release);
+    return true;
+}
 
 using bg3le::InputKind;
 
@@ -123,12 +144,28 @@ extern "C" int SDL_PollEvent(SDL_Event* event) {
     using Fn = int (*)(SDL_Event*);
     static const Fn next = real<Fn>("SDL_PollEvent");
     if (next == nullptr) return 0;
+    if (event != nullptr && take_injected(event)) return 1;
 
     int result = bg3le::imgui_overlay_wanted()
         ? bg3le::sdl_on_poll_event(next, event) : next(event);
     // After the overlay has had it, as upstream orders them.
     if (result == 1 && dispatch_input(event)) result = 0;
     return result;
+}
+
+// Upstream's InjectKeyEvent: a key event for the game's next SDL_PollEvent.
+extern "C" void bg3le_sdl_inject_key(bool down, int scancode, int modifiers) {
+    SDL_Event evt;
+    std::memset(&evt, 0, sizeof(evt));
+    evt.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    evt.key.timestamp = SDL_GetTicks();
+    evt.key.state = down ? SDL_PRESSED : SDL_RELEASED;
+    evt.key.keysym.scancode = (SDL_Scancode)scancode;
+    evt.key.keysym.sym = SDL_SCANCODE_TO_KEYCODE((SDL_Scancode)scancode);
+    evt.key.keysym.mod = (Uint16)modifiers;
+    std::lock_guard<std::mutex> lock(g_inject_mutex);
+    g_injected.push_back(evt);
+    g_have_injected.store(true, std::memory_order_release);
 }
 
 extern "C" SDL_bool SDL_IsTextInputActive(void) {
