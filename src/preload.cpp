@@ -659,13 +659,14 @@ using SetAchievementFn = bool (*)(void*, const char*);
 std::atomic<SetAchievementFn> g_real_set_achievement{nullptr};
 std::atomic<bool> g_user_stats_vtable_patched{false};
 
-// EnableAchievements: the engine's per-module "is official" predicate,
-// patched to `mov eax,1; ret` like bg3se's IsModded patch.
-constexpr std::uintptr_t kAchievementPredicate = 0x37675f0;
-constexpr unsigned char kAchievementPredicateBytes[9] = {
-    0x41, 0x57, 0x41, 0x56, 0x53, 0x48, 0x83, 0xec, 0x50};
-constexpr unsigned char kAchievementPredicatePatch[6] = {
-    0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3};
+// EnableAchievements: ls::ModuleSettings::IsModded, patched to return false
+// as bg3se's patch makes it. Not the per-module "is official" predicate it
+// calls (image+0x37675f0): new games use that too, and with it forced true
+// they started with the base modules only.
+constexpr std::uintptr_t kIsModded = 0x3767580;
+constexpr unsigned char kIsModdedBytes[11] = {
+    0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x50};
+constexpr unsigned char kIsModdedPatch[3] = {0x31, 0xc0, 0xc3};  // xor eax,eax; ret
 
 // Off with BG3LE_ACHIEVEMENTS=0, or "EnableAchievements": false in
 // ScriptExtenderSettings.json next to the binary (default on).
@@ -710,18 +711,16 @@ bool host_is_game() {
 // Idempotent: applies once, then only re-checks the bytes.
 void ensure_achievement_gate_patch() {
     if (!host_is_game() || achievement_patch_disabled()) return;
-    if (bytes_match(kAchievementPredicate, kAchievementPredicatePatch,
-                    sizeof(kAchievementPredicatePatch))) {
+    if (bytes_match(kIsModded, kIsModdedPatch, sizeof(kIsModdedPatch))) {
         return;
     }
     static bool first = true;
-    if (patch_bytes(kAchievementPredicate, kAchievementPredicateBytes,
-                    sizeof(kAchievementPredicateBytes), kAchievementPredicatePatch,
-                    sizeof(kAchievementPredicatePatch))) {
-        logf("EnableAchievements: %s IsModded predicate at 0x%lx",
-             first ? "patched" : "re-applied", (unsigned long)kAchievementPredicate);
+    if (patch_bytes(kIsModded, kIsModdedBytes, sizeof(kIsModdedBytes),
+                    kIsModdedPatch, sizeof(kIsModdedPatch))) {
+        logf("EnableAchievements: %s IsModded at 0x%lx",
+             first ? "patched" : "re-applied", (unsigned long)kIsModded);
     } else if (first) {
-        logf("WARNING: EnableAchievements predicate patch refused -- "
+        logf("WARNING: EnableAchievements IsModded patch refused -- "
              "achievements will stay mod-blocked");
     }
     first = false;
@@ -1013,8 +1012,7 @@ void dump_osiris_api(void* self) {
     }
 
     if (!achievement_patch_disabled() &&
-        bytes_match(kAchievementPredicate, kAchievementPredicatePatch,
-                    sizeof(kAchievementPredicatePatch))) {
+        bytes_match(kIsModded, kIsModdedPatch, sizeof(kIsModdedPatch))) {
         // Same point at which bg3se reports it.
         statusf("Modded achievements enabled");
     }

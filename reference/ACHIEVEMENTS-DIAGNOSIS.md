@@ -18,12 +18,20 @@ Windows.
 
 ## What bg3le does
 
-The Linux binary exports none of these names, but the same logic exists as a
-small per-module "is this module official" predicate at raw VMA `0x37675f0`.
-`ensure_achievement_gate_patch()` in `src/preload.cpp` overwrites its
-prologue (`41 57 41 56 53 48 83 ec 50`, verified before writing) with
-`b8 01 00 00 00 c3` (`mov eax,1; ret`). That is the direct equivalent of
-bg3se's `IsModded` patch, one level below the consumers.
+The Linux binary exports none of these names, but the same logic exists as
+`HasCustomMods` at raw VMA `0x3767580`, the loop "does any module fail the
+official-module predicate". `ensure_achievement_gate_patch()` in
+`src/preload.cpp` overwrites its prologue (`55 41 57 41 56 41 55 41 54 53
+50`, verified before writing) with `31 c0 c3` (`xor eax,eax; ret`): "not
+modded", the direct equivalent of bg3se's `IsModded` patch.
+
+Until 2026-09-28 the patch went one level lower, forcing the per-module
+predicate (`0x37675f0`) to return 1. That predicate has 13 callers, and a new
+game builds its module list with it: with every module "official", a new
+game started with the 13 base modules and no mods at all, so no modded class,
+race or item existed in character creation. Save loads were unaffected, as
+they take the save's own module list. Patching the loop leaves the predicate
+truthful for its other callers.
 
 - Applied from the `bg3le_init` constructor, before `main` and before the
   game's `fork()`, so both processes and every session-load cache see it.
@@ -37,8 +45,8 @@ bg3se's `IsModded` patch, one level below the consumers.
   with `"EnableAchievements": false` in `ScriptExtenderSettings.json` next
   to the game binary (bg3se parity, default true; `settings_flag()` in
   `src/console.cpp`).
-- Log lines: `EnableAchievements: patched IsModded predicate at 0x37675f0`
-  on success, `WARNING: EnableAchievements predicate patch refused` when the
+- Log lines: `EnableAchievements: patched IsModded at 0x3767580`
+  on success, `WARNING: EnableAchievements IsModded patch refused` when the
   prologue bytes do not match (a new game build; see "Updating for a new
   binary" below). `Modded achievements enabled` is reported at story load,
   at the same point bg3se reports it.
@@ -91,14 +99,16 @@ The client side never calls the predicate, the loop, or reads `+0x87` or
 Osiris handler and crosses from the server process to the client, which is
 why forward-searching from the handler for "the branch" kept failing.
 
-### Coverage of the predicate patch
+### Coverage of the IsModded patch
 
 Opens checks #1 and #2 and every loop-based consumer, including both cached
-"modded" bytes. Two inlined copies of the official-module compare remain
-unpatched on purpose: `0x2c27ae0` (by-value variant) and `0x2e06590`
-(module-settings validation). They affect load validation, not the unlock
-or the badges. Patch them only if the badge test fails while the unlock
-test passes.
+"modded" bytes. Not covered: the load-status reporter's inlined loop in
+`0x2c2cb20`, which calls the predicate directly (at `0x2c2cc44`), so the Load
+Game "modded" badge may show again; and two inlined copies of the
+official-module compare, `0x2c27ae0` (by-value variant) and `0x2e06590`
+(module-settings validation), which affect load validation, not the unlock.
+Re-run the badge test from "Live validation" before patching any of them,
+and never patch the predicate itself.
 
 ## History: why a bypass came first
 
@@ -136,8 +146,10 @@ To re-target: find the function that formats a module GUID with
 `%08x-%04hx-%04hx-...` and compares the resulting FixedString index against
 a run of 19 `.bss` globals; PREDICATE-ANALYSIS.md lists the globals, the
 FixedString constructor and all callers of the current build to cross-check
-against. Update `kAchievementPredicate` and `kAchievementPredicateBytes` in
-`src/preload.cpp`, then run the A/B protocol in the runbook.
+against. The loop that calls it over `list+8` (count at `list+0x14`, stride
+`0x60`) is `HasCustomMods`. Update `kIsModded` and `kIsModdedBytes` in
+`src/preload.cpp`, run the A/B protocol in the runbook, and check that a new
+game's character creation still lists modded classes.
 
 ## Known limitations
 
