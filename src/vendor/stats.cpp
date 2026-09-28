@@ -302,11 +302,27 @@ struct Found {
     void const* GuidsHeader{nullptr};       // and for GUIDs
     void const* TranslatedHeader{nullptr};  // and for TranslatedStrings
     bool Attributes{false};             // whether all of the above landed
+    void const* First{nullptr};         // Objects[0], to notice a rebuild
 };
 
 Found& state() {
     static Found f;
     return f;
+}
+
+// Bumped whenever the engine rebuilds its stats, which it does when a save's
+// module list differs from the load order. Every cache keyed by an engine
+// address or pool slot clears on it: a rebuilt modifier list can land where
+// another list was, and a stale name map then says Conditions is not an
+// attribute of an interrupt.
+std::uint32_t g_generation = 0;
+
+template <class F>
+void clear_on_rebuild(std::uint32_t& seen, F clear) {
+    if (seen != g_generation) {
+        clear();
+        seen = g_generation;
+    }
 }
 
 // A pointer array containing an element with a specific name.
@@ -1017,25 +1033,42 @@ bool search_for_stats() {
 // Re-reads the Objects array from its header, at most every 100 ms unless
 // forced: 27,821 entries were seen mid-load where the finished array holds
 // fewer, and the stale tail pointed at objects the engine had let go.
-void refresh_objects(bool force) {
+// True when it re-read.
+bool refresh_objects(bool force) {
     Found& f = state();
-    if (f.ObjectsHeader == nullptr) return;
+    if (f.ObjectsHeader == nullptr) return false;
     static std::chrono::steady_clock::time_point last{};
     const auto now = std::chrono::steady_clock::now();
-    if (!force && now - last < std::chrono::milliseconds(100)) return;
+    if (!force && now - last < std::chrono::milliseconds(100)) return false;
     last = now;
     ArrayRef fresh{};
     if (array_header_at(f.ObjectsHeader, &fresh)) f.Objects = fresh;
+    return true;
+}
+
+void const* first_object(Found const& f) {
+    void const* first = nullptr;
+    if (f.Objects.Buffer == nullptr || f.Objects.Size == 0) return nullptr;
+    read_as(f.Objects.Buffer, &first);
+    return first;
 }
 
 bool ready() {
     Found& f = state();
+    static std::time_t lastAttempt = 0;
     if (f.Objects.Buffer != nullptr) {
-        refresh_objects(false);
-        return true;
+        if (!refresh_objects(false)) return true;
+        // A rebuild re-creates every object, so the first one moves; bg3le's
+        // own Create only appends.
+        void const* first = first_object(f);
+        if (f.First == nullptr) f.First = first;
+        if (first == nullptr || first == f.First) return true;
+        logf("stats: the engine rebuilt its stats; finding them again");
+        ++g_generation;
+        f = Found{};
+        lastAttempt = 0;
     }
 
-    static std::time_t lastAttempt = 0;
     const std::time_t now = std::time(nullptr);
     if (lastAttempt != 0 && now - lastAttempt < 10) return false;
     lastAttempt = now;
@@ -1045,6 +1078,7 @@ bool ready() {
     const double ms =
         1000.0 * (double)(std::clock() - started) / (double)CLOCKS_PER_SEC;
     logf("stats: search took %.0f ms", ms);
+    if (ok) state().First = first_object(state());
     return ok;
 }
 
@@ -1228,6 +1262,8 @@ std::unordered_map<std::string, void const*> const& stats_by_name();
 std::unordered_map<std::string, void const*> const& stats_by_name() {
     static std::unordered_map<std::string, void const*> byName;
     static std::uint32_t builtFor = 0;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { byName.clear(); builtFor = 0; });
 
     const std::uint32_t size = state().Objects.Size;
     if (!byName.empty() && builtFor == size) return byName;
@@ -1275,6 +1311,8 @@ std::unordered_map<std::string, std::vector<char const*>> const&
 stats_names_by_list() {
     static std::unordered_map<std::string, std::vector<char const*>> byList;
     static std::uint32_t builtFor = 0;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { byList.clear(); builtFor = 0; });
 
     const std::uint32_t size = state().Objects.Size;
     if (!byList.empty() && builtFor == size) return byList;
@@ -1412,6 +1450,8 @@ void const* list_for(void const* object) {
 // do not change while it runs, so each is read once.
 std::vector<void const*> const* modifiers_of(void const* list) {
     static std::unordered_map<void const*, std::vector<void const*>> byList;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { byList.clear(); });
     auto known = byList.find(list);
     if (known != byList.end()) return &known->second;
 
@@ -1472,6 +1512,8 @@ struct PropertyCache {
 
 PropertyCache& property_cache() {
     static PropertyCache cache;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { cache = PropertyCache{}; });
     return cache;
 }
 
@@ -1516,6 +1558,8 @@ std::vector<std::int32_t> const* properties_of(void const* object) {
 
 ModifierMeta const* meta_of(void const* modifier) {
     static std::unordered_map<void const*, ModifierMeta> byModifier;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { byModifier.clear(); });
     auto known = byModifier.find(modifier);
     if (known != byModifier.end()) return &known->second;
 
@@ -1815,6 +1859,8 @@ extern "C" int bg3le_stats_attr_index(void const* object,
 
     static std::unordered_map<void const*,
                               std::unordered_map<std::string, int>> byList;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { byList.clear(); });
     auto known = byList.find(list);
     if (known == byList.end()) {
         std::unordered_map<std::string, int> names;
@@ -1989,6 +2035,8 @@ extern "C" char const* bg3le_stats_attr_string(int raw) {
     // The pool slot's id, kept: slots are only ever appended to, and the
     // id behind one does not change.
     static std::unordered_map<int, std::uint32_t> known;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { known.clear(); });
     auto found = known.find(raw);
     if (found == known.end()) {
         std::uint32_t id = 0;
@@ -2042,11 +2090,15 @@ extern "C" char const* bg3le_stats_attr_translated(int raw) {
 // interrupt that always fires.
 std::size_t& conditions_taken() {
     static std::size_t taken = 0;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { taken = 0; });
     return taken;
 }
 
 std::size_t& strings_taken() {
     static std::size_t taken = 0;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { taken = 0; });
     return taken;
 }
 
@@ -2159,6 +2211,8 @@ extern "C" int bg3le_stats_condition_intern(char const* text) {
     // Larian strings, most of them through a pointer, and a mod that
     // writes forty conditions paid for it forty times.
     static std::unordered_map<std::string, int> ours;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { ours.clear(); });
     auto known = ours.find(text);
     if (known != ours.end()) return known->second;
 
@@ -2218,6 +2272,8 @@ extern "C" int bg3le_stats_string_intern(char const* text) {
     // capacity for ids that need it.
     static std::unordered_map<std::uint32_t, int> slots;
     static bool mapped = false;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { slots.clear(); mapped = false; });
     if (!mapped) {
         mapped = true;
         std::vector<std::uint32_t> all(f.Strings.Size);
@@ -2273,6 +2329,8 @@ extern "C" int bg3le_stats_int64_intern(std::int64_t value) {
 
     static std::unordered_map<std::int64_t, int> slots;
     static bool mapped = false;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { slots.clear(); mapped = false; });
     if (!mapped) {
         mapped = true;
         std::vector<std::uint64_t> cells(f.Int64s.Size);
@@ -2323,6 +2381,8 @@ extern "C" int bg3le_stats_float_intern(float value) {
 
     static std::unordered_map<std::uint32_t, int> slots;
     static bool mapped = false;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { slots.clear(); mapped = false; });
     if (!mapped) {
         mapped = true;
         std::vector<std::uint32_t> all(f.Floats.Size);
@@ -2477,6 +2537,8 @@ extern "C" int bg3le_stats_translated_intern(char const* text) {
     const Entry entry{handleId, version, 0, unknownId, 0, 0};
 
     static std::unordered_map<std::uint64_t, int> ours;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { ours.clear(); });
     const std::uint64_t key = ((std::uint64_t)handleId << 16) | version;
     if (auto known = ours.find(key); known != ours.end()) return known->second;
 
@@ -2522,6 +2584,8 @@ extern "C" int bg3le_stats_guid_intern(char const* text) {
 
     static std::unordered_map<std::string, int> slots;
     static bool mapped = false;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { slots.clear(); mapped = false; });
     if (!mapped) {
         mapped = true;
         std::vector<unsigned char> all((std::size_t)f.Guids.Size * 16);
@@ -2728,6 +2792,8 @@ extern "C" char const* bg3le_stats_attr_condition(int raw) {
     // times. Entries are only ever appended, so an index that has been
     // read once cannot change.
     static std::unordered_map<int, std::string> known;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { known.clear(); });
     auto found = known.find(raw);
     if (found != known.end()) return found->second.c_str();
 
