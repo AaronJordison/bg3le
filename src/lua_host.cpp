@@ -10972,6 +10972,7 @@ if Ext._Internal.IsClientState() then
   end
   function methods:ToString() return I.UiToString(ptr_of[self]) end
   function methods:VisualChild(i) return wrap(I.UiVisualChild(ptr_of[self], i)) end
+  function methods:At(i) return wrap(I.UiCollectionItem(ptr_of[self], i)) end
   function methods:Child(i) return wrap(I.UiChild(ptr_of[self], i)) end
   function methods:Find(name) return wrap(I.UiFind(ptr_of[self], name)) end
   function methods:Resource(key, full)

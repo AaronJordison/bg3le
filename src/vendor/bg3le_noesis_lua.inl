@@ -21,6 +21,7 @@
 #include "../log.h"
 #include "../hook.h"
 #include "../mem.h"
+#include <NsGui/BaseCollection.h>
 
 extern "C" bool bg3le_with_client_lua(void (*fn)(lua_State*, void*), void* user);
 
@@ -641,6 +642,23 @@ int l_visual_child(lua_State* L)
     return 1;
 }
 
+// Item i (from 1) of any Noesis collection: ObservableCollection<T> and the
+// rest derive from BaseCollection, whose GetComponent the engine provides.
+int l_collection_item(lua_State* L)
+{
+    ensure_symbols();
+    auto obj = optional_object(L, 1);
+    auto index = (uint32_t)luaL_checkinteger(L, 2);
+    for (auto t = obj != nullptr ? obj->GetClassType() : nullptr; t != nullptr; t = t->GetBase()) {
+        if (std::strcmp(t->GetName(), "BaseCollection") == 0) {
+            auto items = static_cast<BaseCollection*>(static_cast<BaseComponent*>(obj));
+            push_object(L, index > 0 && (int)index <= items->Count() ? items->GetComponent(index - 1).GetPtr() : nullptr);
+            return 1;
+        }
+    }
+    return luaL_error(L, "%s is not a collection", obj != nullptr ? obj->GetClassType()->GetName() : "nil");
+}
+
 int l_visual_parent(lua_State* L)
 {
     ensure_symbols();
@@ -1052,6 +1070,7 @@ extern "C" void bg3le_ui_register(lua_State* L)
         {"UiIsA", Noesis::bg3le_ui::l_is_a},
         {"UiVisualCount", Noesis::bg3le_ui::l_visual_count},
         {"UiVisualChild", Noesis::bg3le_ui::l_visual_child},
+        {"UiCollectionItem", Noesis::bg3le_ui::l_collection_item},
         {"UiVisualParent", Noesis::bg3le_ui::l_visual_parent},
         {"UiChildCount", Noesis::bg3le_ui::l_child_count},
         {"UiChild", Noesis::bg3le_ui::l_child},
