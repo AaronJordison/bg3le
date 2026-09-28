@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "../log.h"
+#include "../hook.h"
 #include "../mem.h"
 
 extern "C" bool bg3le_with_client_lua(void (*fn)(lua_State*, void*), void* user);
@@ -246,12 +247,61 @@ void push_stored(lua_State* L, Type const* type, StoredValue const* o, Type cons
     }
 }
 
+// The engine's Noesis has these two as Get overloads, in the opposite order
+// to the 3.1.7 headers: slot 6 is Get(ptr), returning the value's address,
+// and slot 7 Get(ptr, dest), copying it out. Engine properties are called by
+// slot; bg3le's own (CustomProperties) were compiled with the headers' order.
+bool engine_property(TypeProperty const* prop)
+{
+    auto fn = (*reinterpret_cast<std::uintptr_t const* const*>(prop))[6];
+    return bg3le::in_text(fn - bg3le::load_bias(), 1);
+}
+
+void const* property_address(TypeProperty const* prop, void const* obj)
+{
+    if (!engine_property(prop)) return prop->Get(obj);
+    using Fn = void const* (*)(TypeProperty const*, void const*);
+    return (*reinterpret_cast<Fn const* const*>(prop))[6](prop, obj);
+}
+
+void property_copy(TypeProperty const* prop, void const* obj, void* dest)
+{
+    if (!engine_property(prop)) return prop->GetCopy(obj, dest);
+    using Fn = void (*)(TypeProperty const*, void const*, void*);
+    (*reinterpret_cast<Fn const* const*>(prop))[7](prop, obj, dest);
+}
+
 template <class T>
 T copy_of(TypeProperty const* prop, BaseObject const* obj)
 {
     T value{};
-    prop->GetCopy(obj, &value);
+    property_copy(prop, obj, &value);
     return value;
+}
+
+// A getter property (Noesis' TypePropertyFunction) calls through a member
+// function pointer, and some engine properties register none: calling them
+// jumps to 0 (gui::DCCharacterCreation.Name). Their accessors open with
+// `mov DISP(%rdi),%rax; test $1,%al`, DISP being where that pointer is kept.
+bool getter_missing(TypeProperty const* prop, int slot)
+{
+    std::uintptr_t const* vtable = nullptr;
+    std::uintptr_t fn = 0;
+    unsigned char code[24];
+    if (!bg3le::safe_read(prop, &vtable, sizeof(vtable)) || vtable == nullptr
+        || !bg3le::safe_read(vtable + slot, &fn, sizeof(fn))
+        || !bg3le::safe_read(reinterpret_cast<void const*>(fn), code, sizeof(code))) {
+        return false;
+    }
+    for (std::size_t i = 0; i + 6 <= sizeof(code); ++i) {
+        if (code[i] == 0x48 && code[i + 1] == 0x8b && code[i + 2] == 0x47
+            && code[i + 4] == 0xa8 && code[i + 5] == 0x01) {
+            std::uint64_t getter[2] = {1, 1};  // pointer, this-adjustment
+            bg3le::safe_read(reinterpret_cast<char const*>(prop) + code[i + 3], getter, sizeof(getter));
+            return getter[0] == 0 && getter[1] == 0;
+        }
+    }
+    return false;
 }
 
 void push_property(lua_State* L, BaseObject const* obj, TypeProperty const* prop)
@@ -262,7 +312,13 @@ void push_property(lua_State* L, BaseObject const* obj, TypeProperty const* prop
     auto typeOfType = type->GetClassType();
     auto name = prop->GetName();
     auto objType = obj->GetClassType();
-    auto ref = [&]() { return const_cast<void*>(prop->Get(obj)); };
+    auto ref = [&]() { return const_cast<void*>(property_address(prop, obj)); };
+
+    // A write-only property has nothing to read, through either accessor.
+    if (getter_missing(prop, 6) || getter_missing(prop, 7)) {
+        lua_pushnil(L);
+        return;
+    }
 
     if (type == types.CStringPtr.Type) {
         lua_pushstring(L, copy_of<char const*>(prop, obj));
