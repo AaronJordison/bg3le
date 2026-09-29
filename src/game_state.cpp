@@ -18,6 +18,7 @@
 
 #include "hook.h"
 #include "log.h"
+#include "resolve.h"
 #include "lua_host.h"
 #include "mem.h"
 #include "stackdump.h"
@@ -165,8 +166,7 @@ void install_game_state_hook() {
     }
 
     const std::uintptr_t machine_update = target::MachineUpdate();
-    if (bytes_match(machine_update, kMachineUpdatePrologue,
-                    sizeof(kMachineUpdatePrologue))
+    if (code_near(machine_update, kMachineUpdatePrologue) != 0
         && hook_call_sites(machine_update,
                            reinterpret_cast<void*>(&machine_update_hook),
                            &original) > 0) {

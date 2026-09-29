@@ -30,6 +30,7 @@
 
 #include "../hook.h"
 #include "../log.h"
+#include "../resolve.h"
 #include "../targets.h"
 #include "../mem.h"
 
@@ -276,12 +277,10 @@ void* repository() {
 }  // namespace
 
 extern "C" bool bg3le_engine_strings_install() {
-    if (!bytes_match(bg3le::target::FixedStringCreate(), kFixedStringCreatePrologue,
-                     sizeof(kFixedStringCreatePrologue))
-        || !bytes_match(bg3le::target::FixedStringCreateSeedAt(), kFixedStringCreateSeed,
-                        sizeof(kFixedStringCreateSeed))) {
-        logf("strings: FixedString::CreateFromString not at %#lx",
-             (unsigned long)bg3le::target::FixedStringCreate());
+    // Its prologue, and the hash seed it loads near its start.
+    if (code_near(bg3le::target::FixedStringCreate(), kFixedStringCreatePrologue) == 0
+        || code_near(bg3le::target::FixedStringCreate(), kFixedStringCreateSeed) == 0) {
+        logf("strings: FixedString::CreateFromString was not found");
         return false;
     }
     g_create = reinterpret_cast<CreateProc>(load_bias() + bg3le::target::FixedStringCreate());

@@ -19,6 +19,7 @@
 #include <cstring>
 
 #include "../log.h"
+#include "../resolve.h"
 #include "../targets.h"
 #include "../mem.h"
 #include "engine_containers.h"
@@ -126,13 +127,13 @@ const InitFn kBoostManage = {
 // The function's address if it is the one this build was read from.
 void* verified(InitFn const& fn) {
     const std::uintptr_t bias = load_bias();
-    auto const* code = reinterpret_cast<unsigned char const*>(bias + fn.Offset());
-    unsigned char held[sizeof(fn.Bytes)] = {};
-    if (!safe_read(code, held, fn.Length) || std::memcmp(held, fn.Bytes, fn.Length) != 0) {
-        logf("stat sync: %s is not at image+%#lx on this build", fn.Name,
-             (unsigned long)fn.Offset());
+    // The bytes near its start; StatsDisp counts from where they matched.
+    const std::uintptr_t at = code_near(fn.Offset(), fn.Bytes, fn.Length);
+    if (at == 0) {
+        logf("stat sync: %s was not found on this build", fn.Name);
         return nullptr;
     }
+    auto const* code = reinterpret_cast<unsigned char const*>(bias + at);
     if (fn.StatsDisp != 0) {
         std::int32_t disp = 0;
         char const* holder = nullptr;

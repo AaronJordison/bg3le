@@ -3,15 +3,18 @@
 #include <elf.h>
 #include <link.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
 #include <string>
+#include <string.h>
 #include <sys/stat.h>
 #include <vector>
 
+#include "debug_server.h"
 #include "elf_symbols.h"
 #include "hook.h"
 #include "log.h"
@@ -161,7 +164,7 @@ std::uintptr_t resolve_code(const Sig& sig) {
     std::lock_guard<std::mutex> guard(g_lock);
     Pattern pat;
     if (!parse(sig.pattern, &pat)) {
-        logf("resolve: %s has a malformed pattern", sig.name);
+        statusf("WARNING: resolve: %s has a malformed pattern; what uses it is off", sig.name);
         return 0;
     }
     std::uintptr_t text = 0;
@@ -191,7 +194,8 @@ std::uintptr_t resolve_code(const Sig& sig) {
         if (hits == 0) hits = scan(pat, text, text_end, &found);
     }
     if (hits != 1) {
-        logf("resolve: %s: %s -- leaving it off", sig.name, hits == 0 ? "no match" : "ambiguous");
+        statusf("WARNING: resolve: %s %s in this build; what uses it is off", sig.name,
+                hits == 0 ? "not found" : "matches more than once");
         return 0;
     }
     const std::uintptr_t off = found + sig.start;
@@ -203,11 +207,24 @@ std::uintptr_t resolve_code(const Sig& sig) {
     return off;
 }
 
+std::uintptr_t code_near(std::uintptr_t from, const unsigned char* bytes, std::size_t len,
+                         std::size_t window) {
+    std::uintptr_t text = 0;
+    std::size_t size = 0;
+    if (from == 0 || len == 0 || !text_range(&text, &size)) return 0;
+    const std::uintptr_t end = text + size;
+    if (from < text || from >= end) return 0;
+    const std::size_t span = std::min<std::size_t>(window + len, end - from);
+    const auto* base = reinterpret_cast<const unsigned char*>(load_bias() + from);
+    const void* hit = ::memmem(base, span, bytes, len);
+    return hit == nullptr ? 0 : from + static_cast<std::size_t>(static_cast<const unsigned char*>(hit) - base);
+}
+
 std::uintptr_t resolve_symbol(const char* mangled) {
     if (g_symbols == nullptr) return 0;
     void* p = g_symbols->find(mangled);
     if (p == nullptr) {
-        logf("resolve: no symbol %s", mangled);
+        statusf("WARNING: resolve: no symbol %s in this build; what uses it is off", mangled);
         return 0;
     }
     return reinterpret_cast<std::uintptr_t>(p) - load_bias();
@@ -231,7 +248,7 @@ std::uintptr_t resolve_call(const Sig& sig) {
     if (insn == 0) return 0;
     const auto op = *reinterpret_cast<const unsigned char*>(load_bias() + insn);
     if (op != 0xE8 && op != 0xE9) {
-        logf("resolve: %s is not a call or jump", sig.name);
+        statusf("WARNING: resolve: %s is not a call or jump in this build; what uses it is off", sig.name);
         return 0;
     }
     return resolve_rip(sig, 1, 5);

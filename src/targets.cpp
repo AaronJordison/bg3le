@@ -14,8 +14,6 @@ BG3LE_TARGET(EntityStorageLookup,
              resolve_call(Sig{"EntityStorageLookup", 0x218c6d1, "e8 ?? ?? ?? ?? 84 d2 75 1a 44 89 f1 c1 e9 03 81 e1 f8 0f 00 00 48 8b 04 08 4c 0f a3 f0 0f 82 ?? ?? ?? ?? 48 8b 0c 24 0f b6 41 28"}))
 BG3LE_TARGET(FixedStringCreate,
              resolve_code(Sig{"FixedStringCreate", 0x226db50, "55 41 57 41 56 41 55 41 54 53 48 81 ec c8 00 00 00 48 63 57 08"}))
-BG3LE_TARGET(FixedStringCreateSeedAt,
-             resolve_code(Sig{"FixedStringCreateSeedAt", 0x226dbbc, "41 ba ed 5e ad de 45 31 f6 42 8b 6c b3 fd"}))
 BG3LE_TARGET(FlushECBs,
              resolve_code(Sig{"FlushECBs", 0x2486e10, "55 48 89 e5 41 57 41 56 41 55 41 54 53 48 83 e4 c0 48 81 ec 40 0b 00 00"}))
 BG3LE_TARGET(PathSearch,

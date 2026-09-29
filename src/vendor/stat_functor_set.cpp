@@ -27,6 +27,7 @@
 #include "engine_containers.h"
 #include "../hook.h"
 #include "../log.h"
+#include "../resolve.h"
 #include "../targets.h"
 #include "../mem.h"
 
@@ -124,8 +125,9 @@ extern "C" bool bg3le_stats_set_functors(void* object, char const* attribute, ch
                                          char const** why) {
     static int usable = -1;
     if (usable < 0) {
-        usable = code_is(bg3le::target::SplitGroups(), kSplitGroupsHead) && code_is(bg3le::target::MakeSet(), kMakeSetHead)
-                 && code_is(bg3le::target::ParseFunctor(), kParseFunctorHead);
+        usable = bg3le::code_near(bg3le::target::SplitGroups(), kSplitGroupsHead) != 0
+                 && bg3le::code_near(bg3le::target::MakeSet(), kMakeSetHead) != 0
+                 && bg3le::code_near(bg3le::target::ParseFunctor(), kParseFunctorHead) != 0;
         if (!usable) bg3le::logf("stats: the engine's functor parsing is not where this build has it");
     }
     auto* stats = static_cast<RPGStats*>(bg3le_rpgstats());
@@ -194,7 +196,7 @@ extern "C" bool bg3le_stats_split_groups(char const* value,
                                          void (*each)(void* user, char const* key,
                                                       char const* text, std::size_t size),
                                          void* user) {
-    static const bool usable = code_is(bg3le::target::SplitGroups(), kSplitGroupsHead);
+    static const bool usable = bg3le::code_near(bg3le::target::SplitGroups(), kSplitGroupsHead) != 0;
     void* ctx = nullptr;
     if (!usable || !bg3le_game_allocator_ready() || bg3le::target::ParserContext() == 0
         || !bg3le::safe_read((void const*)(bg3le::load_bias() + bg3le::target::ParserContext()), &ctx, sizeof(ctx))

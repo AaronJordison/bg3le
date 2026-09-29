@@ -22,6 +22,7 @@
 #include "engine_containers.h"
 #include "../hook.h"
 #include "../log.h"
+#include "../resolve.h"
 #include "../targets.h"
 #include "../mem.h"
 
@@ -557,13 +558,12 @@ extern "C" std::size_t bg3le_ai_paths_active(bool client, void** out, std::size_
 
 // The engine's search of one path, image+0x2646b30 (grid, path): what the
 // grid's own update runs on the head of its Paths list, between marking and
-// unmarking the path's ignored and moved entities. Checked by its opening,
-// which copies TargetAdjusted into TargetPosition.
+// unmarking the path's ignored and moved entities. Checked by the code near
+// its start that copies TargetAdjusted into TargetPosition.
 namespace {
 constexpr unsigned char kPathSearchHead[] = {
     0x8b, 0x86, 0x84, 0x00, 0x00, 0x00, 0x89, 0x86, 0x50, 0x01, 0x00, 0x00,
     0x48, 0x8b, 0x46, 0x7c, 0x48, 0x89, 0x86, 0x48, 0x01, 0x00, 0x00};
-constexpr std::size_t kPathSearchHeadAt = 0x47;
 using PathSearchProc = bool (*)(bg3se::AiGrid*, bg3se::AiPath*);
 
 // The grid update's search step, image+0x2c69970 (grid): while its Paths
@@ -573,7 +573,6 @@ using PathSearchProc = bool (*)(bg3se::AiGrid*, bg3se::AiPath*);
 constexpr unsigned char kPathStepHead[] = {
     0xc7, 0x87, 0xbc, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x83, 0xbf, 0x0c, 0x01, 0x00, 0x00, 0x00};
-constexpr std::size_t kPathStepHeadAt = 0x0e;
 using PathStepProc = void (*)(bg3se::AiGrid*);
 static_assert(offsetof(bg3se::AiGrid, Paths) == 0x100);
 }  // namespace
@@ -583,10 +582,7 @@ static_assert(offsetof(bg3se::AiGrid, Paths) == 0x100);
 extern "C" int bg3le_ai_path_search(bool client, void* at, char const** why) {
     static int usable = -1;
     if (usable < 0) {
-        unsigned char held[sizeof(kPathSearchHead)] = {};
-        usable = bg3le::safe_read((void const*)(bg3le::load_bias() + bg3le::target::PathSearch() + kPathSearchHeadAt),
-                                  held, sizeof(held))
-                 && std::memcmp(held, kPathSearchHead, sizeof(held)) == 0;
+        usable = bg3le::code_near(bg3le::target::PathSearch(), kPathSearchHead) != 0;
         if (!usable) bg3le::logf("paths: the engine's path search is not where this build has it");
     }
     auto* grid = ai_grid(client);
@@ -603,12 +599,7 @@ extern "C" int bg3le_ai_path_search(bool client, void* at, char const** why) {
     // which only the grid's own step does: it runs on a Paths list holding
     // just this path, the grid's own list put back afterwards.
     if (path->IgnoreEntities.size() != 0 || path->MovedEntities.size() != 0) {
-        static const bool stepUsable = [] {
-            unsigned char held[sizeof(kPathStepHead)] = {};
-            return bg3le::safe_read((void const*)(bg3le::load_bias() + bg3le::target::PathStep() + kPathStepHeadAt),
-                                    held, sizeof(held))
-                   && std::memcmp(held, kPathStepHead, sizeof(held)) == 0;
-        }();
+        static const bool stepUsable = bg3le::code_near(bg3le::target::PathStep(), kPathStepHead) != 0;
         if (!stepUsable) {
             *why = "the grid's path step is not where this build has it";
             return -1;
@@ -657,19 +648,12 @@ using AddActionProc = void (*)(bg3se::esv::SurfaceManager*, bg3se::esv::SurfaceA
 using TransformInitProc = void (*)(bg3se::esv::TransformSurfaceAction*, int transform, int layer,
                                    int origin);
 
-template <std::size_t N>
-bool code_is(std::uintptr_t at, unsigned char const (&head)[N]) {
-    unsigned char held[N] = {};
-    return bg3le::safe_read((void const*)(bg3le::load_bias() + at), held, N)
-           && std::memcmp(held, head, N) == 0;
-}
-
 bool surface_code_checks_out() {
     static int usable = -1;
     if (usable < 0) {
-        usable = code_is(bg3le::target::CreateAction() + 0xb, kCreateActionHead)
-                 && code_is(bg3le::target::AddAction() + 4, kAddActionHead)
-                 && code_is(bg3le::target::TransformInit() + 5, kTransformInitHead);
+        usable = bg3le::code_near(bg3le::target::CreateAction(), kCreateActionHead) != 0
+                 && bg3le::code_near(bg3le::target::AddAction(), kAddActionHead) != 0
+                 && bg3le::code_near(bg3le::target::TransformInit(), kTransformInitHead) != 0;
         if (!usable) bg3le::logf("surfaces: the engine's surface action code is not where this build has it");
     }
     return usable != 0;

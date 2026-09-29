@@ -11,8 +11,6 @@ namespace bg3le::target {
 std::uintptr_t EntityStorageLookup();
 // ls::FixedString's create-from-string
 std::uintptr_t FixedStringCreate();
-// the hash seed inside it
-std::uintptr_t FixedStringCreateSeedAt();
 // ecs::EntityWorld::FlushECBs
 std::uintptr_t FlushECBs();
 // the grid path search

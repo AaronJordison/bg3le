@@ -18,6 +18,7 @@
 
 #include "../hook.h"
 #include "../log.h"
+#include "../resolve.h"
 #include "../targets.h"
 #include "../mem.h"
 
@@ -100,20 +101,15 @@ bool engine_read_file(char const* relative, std::string* out) {
 }
 
 void install_path_override_hook() {
-    unsigned char held[sizeof(kFileReaderCtorHead)] = {};
-    if (!safe_read((void const*)(load_bias() + bg3le::target::FileReaderCtor()), held, sizeof(held))
-        || std::memcmp(held, kFileReaderCtorHead, sizeof(held)) != 0) {
-        logf("io: ls::FileReader's constructor is not at image+%#lx; path overrides stay unhonoured",
-             (unsigned long)bg3le::target::FileReaderCtor());
+    if (code_near(bg3le::target::FileReaderCtor(), kFileReaderCtorHead) == 0) {
+        logf("io: ls::FileReader's constructor was not found; path overrides stay unhonoured");
         return;
     }
     void* original = nullptr;
     if (hook_call_sites(bg3le::target::FileReaderCtor(), reinterpret_cast<void*>(&file_reader_ctor), &original, true) > 0) {
         g_real = reinterpret_cast<CtorProc>(original);
     }
-    unsigned char dtor[sizeof(kFileReaderDtorHead)] = {};
-    if (safe_read((void const*)(load_bias() + bg3le::target::FileReaderDtor()), dtor, sizeof(dtor))
-        && std::memcmp(dtor, kFileReaderDtorHead, sizeof(dtor)) == 0) {
+    if (code_near(bg3le::target::FileReaderDtor(), kFileReaderDtorHead) != 0) {
         g_dtor = reinterpret_cast<void (*)(void*)>(load_bias() + bg3le::target::FileReaderDtor());
     }
 }

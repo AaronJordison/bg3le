@@ -20,6 +20,7 @@
 #include "debug_server.h"
 #include "hook.h"
 #include "log.h"
+#include "resolve.h"
 #include "targets.h"
 #include "lua_host.h"
 
@@ -538,11 +539,9 @@ void install_savegame_hook() {
              "will not be saved");
         return;
     }
-    if (!bytes_match(bg3le::target::VariableHelperVisit(), kVariableHelperPrologue,
-                     sizeof(kVariableHelperPrologue))) {
-        logf("savegame: OsirisVariableHelper::SavegameVisit not at %#lx; "
-             "PersistentVars will not be saved",
-             (unsigned long)bg3le::target::VariableHelperVisit());
+    if (code_near(bg3le::target::VariableHelperVisit(), kVariableHelperPrologue) == 0) {
+        logf("savegame: OsirisVariableHelper::SavegameVisit was not found; "
+             "PersistentVars will not be saved");
         return;
     }
     void* original = nullptr;

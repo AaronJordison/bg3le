@@ -26,6 +26,7 @@
 #include "../ecs_types.h"
 #include "../hook.h"
 #include "../log.h"
+#include "../resolve.h"
 #include "../targets.h"
 
 namespace {
@@ -176,12 +177,11 @@ namespace bg3le {
 
 void install_entity_trace_hook() {
     void* original = nullptr;
-    if (bytes_match(bg3le::target::FlushECBs(), kFlushECBsPrologue, sizeof(kFlushECBsPrologue))
+    if (bg3le::code_near(bg3le::target::FlushECBs(), kFlushECBsPrologue) != 0
         && hook_call_sites(bg3le::target::FlushECBs(), reinterpret_cast<void*>(&flush_ecbs_hook), &original, true) > 0) {
         g_flush = reinterpret_cast<FlushProc>(original);
     } else {
-        logf("entity trace: EntityWorld::FlushECBs is not at %#lx; Ext.Entity tracing is off",
-             (unsigned long)bg3le::target::FlushECBs());
+        logf("entity trace: EntityWorld::FlushECBs was not found; Ext.Entity tracing is off");
     }
 }
 

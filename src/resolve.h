@@ -51,4 +51,17 @@ std::uintptr_t resolve_call(const Sig& sig);
 // The build's GNU build ID as hex, or "" if the executable has none.
 const char* build_id();
 
+// Where `bytes` first occur within `window` bytes of `from` (a function's
+// start), or 0. For checks that a function still holds the instructions bg3le
+// relies on -- the field offsets they encode, say -- without pinning how far
+// into the function they sit, which any change earlier in it would move.
+std::uintptr_t code_near(std::uintptr_t from, const unsigned char* bytes, std::size_t len,
+                         std::size_t window = 0x200);
+
+template <std::size_t N>
+std::uintptr_t code_near(std::uintptr_t from, const unsigned char (&bytes)[N],
+                         std::size_t window = 0x200) {
+    return code_near(from, bytes, N, window);
+}
+
 }  // namespace bg3le

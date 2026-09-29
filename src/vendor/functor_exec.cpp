@@ -24,6 +24,7 @@
 
 #include "../hook.h"
 #include "../log.h"
+#include "../resolve.h"
 #include "../targets.h"
 #include "../mem.h"
 
@@ -70,9 +71,7 @@ std::uintptr_t checked(int type) {
     if (type < 1 || type > 9) return 0;
     auto const& e = kExecutors[type - 1];
     if (usable[type] < 0) {
-        unsigned char held[sizeof(e.Head)] = {};
-        usable[type] = bg3le::safe_read((void const*)(bg3le::load_bias() + e.At()), held, sizeof(held))
-                       && std::memcmp(held, e.Head, sizeof(held)) == 0;
+        usable[type] = bg3le::code_near(e.At(), e.Head) != 0;
         if (!usable[type]) bg3le::logf("functors: the executor for context %d is not where this build has it", type);
     }
     return usable[type] ? bg3le::load_bias() + e.At() : 0;
