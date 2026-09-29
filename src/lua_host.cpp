@@ -12370,8 +12370,9 @@ local load_order_key, load_order = nil, nil
 local function current_load_order()
   local settings = Ext._Internal.ModSettingsOrder() or {}
   local n = Ext._Internal.ModCount()
-  local key = table.concat({n, tostring(Ext._Internal.ModUuidAt(0)),
-                            tostring(Ext._Internal.ModUuidAt(n - 1)),
+  -- ModUuidAt returns nothing (not nil) past the end, as with an empty list.
+  local key = table.concat({n, tostring((Ext._Internal.ModUuidAt(0))),
+                            tostring((Ext._Internal.ModUuidAt(n - 1))),
                             table.concat(settings, ",")}, ";")
   if key ~= load_order_key then
     local engine = {}
