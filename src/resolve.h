@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace bg3le {
 
@@ -38,6 +39,10 @@ std::uintptr_t resolve_code(const Sig& sig);
 // A named symbol's offset (functions from bundled libraries keep theirs).
 std::uintptr_t resolve_symbol(const char* mangled);
 
+// Every symbol whose mangled name contains both substrings (b may be null),
+// as offsets: for a family of overloads rather than one exact name.
+std::vector<std::uintptr_t> resolve_symbols_with(const char* a, const char* b = nullptr);
+
 // A vtable's first virtual slot, from its _ZTV symbol.
 std::uintptr_t resolve_vtable(const char* ztv_mangled);
 
@@ -55,13 +60,13 @@ const char* build_id();
 // start), or 0. For checks that a function still holds the instructions bg3le
 // relies on -- the field offsets they encode, say -- without pinning how far
 // into the function they sit, which any change earlier in it would move.
-std::uintptr_t code_near(std::uintptr_t from, const unsigned char* bytes, std::size_t len,
-                         std::size_t window = 0x200);
+std::uintptr_t code_near_n(std::uintptr_t from, const unsigned char* bytes, std::size_t len,
+                           std::size_t window = 0x200);
 
 template <std::size_t N>
 std::uintptr_t code_near(std::uintptr_t from, const unsigned char (&bytes)[N],
                          std::size_t window = 0x200) {
-    return code_near(from, bytes, N, window);
+    return code_near_n(from, bytes, N, window);
 }
 
 }  // namespace bg3le

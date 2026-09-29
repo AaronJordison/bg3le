@@ -9,7 +9,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "debug_server.h"
 #include "log.h"
+#include "resolve.h"
 #include "targets.h"
 #include "mem.h"
 
@@ -97,6 +99,32 @@ bool looks_like_resource_bank(std::uintptr_t rb) {
     return agreed >= kBankCount / 2;
 }
 
+// The engine's own lookup, the first after the ResourcesGlobal load: it must
+// read the same global, index the banks at kResourceBanks, and read a bank's
+// hash size, table, node key and value where bg3le does.
+bool layout_ok() {
+    static const bool ok = [] {
+        constexpr unsigned char kBanks[] = {0x48, 0x0f, 0xbe, 0x09, 0x48, 0x8b, 0x7c, 0xc8,
+                                            kResourceBanks};           // mov 0x50(%rax,%rcx,8),%rdi
+        constexpr unsigned char kHash[] = {0x41, 0xf7, 0x77, kResourcesHashSize};  // divl 0x8(%r15)
+        constexpr unsigned char kTable[] = {0x49, 0x03, 0x57, kResourcesTable};    // add 0x10(%r15),%rdx
+        constexpr unsigned char kKey[] = {0x3b, 0x4a, kNodeKey};                  // cmp 0x8(%rdx),%ecx
+        constexpr unsigned char kValue[] = {0x4c, 0x8b, 0x7a, kNodeValue};         // mov 0x10(%rdx),%r15
+        const std::uintptr_t at = code_near(target::ResourcesGlobalLoad(), kBanks, 0x800);
+        std::int32_t disp = 0;
+        const bool global = at >= 7
+            && safe_read(reinterpret_cast<void const*>(image().From + at - 4), &disp, sizeof(disp))
+            && at + disp == target::ResourcesGlobal();
+        if (!global || code_near(at, kHash, 0x80) == 0 || code_near(at, kTable, 0x80) == 0
+            || code_near(at, kKey, 0x80) == 0 || code_near(at, kValue, 0x80) == 0) {
+            statusf("WARNING: resources: the engine's resource lookup no longer matches; Ext.Resource is off");
+            return false;
+        }
+        return true;
+    }();
+    return ok;
+}
+
 bool looks_like_manager(std::uintptr_t mgr) {
     std::uintptr_t first = 0;
     return peek(mgr + kResourceBanks, &first) && looks_like_resource_bank(first);
@@ -164,10 +192,10 @@ std::uintptr_t current_bank() {
         if (g_global == 0) logf("resources: no ResourceManager found");
     }
     std::uintptr_t mgr = 0, first = 0, second = 0;
-    if (g_global == 0 || !peek(g_global, &mgr) || !peek(mgr + kResourceBanks, &first)) return 0;
+    if (g_global == 0 || !layout_ok() || !peek(g_global, &mgr) || !peek(mgr + kResourceBanks, &first)) return 0;
     std::uint32_t packages = 0;
     if (first != 0 && peek(first + kPackagesCount, &packages) && packages > 0) return first;
-    return peek(mgr + kResourceBanks + 8, &second) ? second : 0;
+    return peek(mgr + kResourceBanks + 8, &second) && looks_like_resource_bank(second) ? second : 0;
 }
 
 // A bank's resources by FixedString index, rebuilt when its count moves.

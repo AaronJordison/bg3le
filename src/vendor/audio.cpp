@@ -2,11 +2,12 @@
 // Norbyte and the bg3se contributors), called by vtable slot.
 //
 // The manager is the object the resource manager holds whose vtable is the
-// Wwise manager's (image+0x7a04ac0). Its slots were mapped by the Wwise
+// Wwise manager's (target::WwiseVtable). Its slots were mapped by the Wwise
 // function each one calls -- AK::SoundEngine keeps its symbols -- because
 // the declared order is MSVC's: this build has one slot more before
 // SetSwitch, and overloads (PostEvent, LoadEvent, ...) sit in a different
-// order. SetSwitch and SetState are checked before anything is called.
+// order. The same mapping is checked at runtime: no slot is called unless its
+// function calls the AK::SoundEngine function it is mapped to.
 
 #include <stdafx.h>
 
@@ -14,8 +15,13 @@
 
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <type_traits>
+#include <unordered_map>
 
 #include "../log.h"
+#include "../hook.h"
+#include "../resolve.h"
 #include "../targets.h"
 #include "../mem.h"
 
@@ -93,9 +99,70 @@ void* manager() {
     return nullptr;
 }
 
+// What each slot's function calls into Wwise, as v4.76 has them (mangled,
+// length-prefixed names in AK::SoundEngine). A slot is only called if its
+// function calls or jumps to that function, which ties the slot number to
+// what it does: a vtable that moved or reordered its slots fails it.
+char const* slot_callee(int slot) {
+    switch (slot) {
+        case SetSwitch: return "9SetSwitch";
+        case SetState: return "8SetState";
+        case SetRTPCValue: return "12SetRTPCValue";
+        case GetRTPCValue: return "12GetRTPCValue";
+        case ResetRTPCValue: return "14ResetRTPCValue";
+        case StopSounds: return "13StopPlayingID";
+        case StopAllSounds: return "7StopAll";
+        case PauseAllSounds: return "20GetActiveGameObjects";
+        case ResumeAllSounds: return "9PostEvent";
+        case GetIDFromString: return "15GetIDFromString";
+        case LoadEvent: return "12PrepareEvent";
+        case UnloadEvent: return "12PrepareEvent";
+        case LoadBank: return "8LoadBank";
+        case UnloadBank: return "10UnloadBank";
+        case PrepareBank: return "11PrepareBank";
+        case PostEventByName: return "9PostEvent";
+        case PlayExternalSound: return "9PostEvent";
+        default: return nullptr;
+    }
+}
+
+bool slot_checks_out(void* const* vt, int slot) {
+    static std::mutex lock;
+    static std::unordered_map<int, bool> known;
+    std::lock_guard<std::mutex> guard(lock);
+    auto it = known.find(slot);
+    if (it != known.end()) return it->second;
+    bool ok = false;
+    char const* callee = slot_callee(slot);
+    const std::uintptr_t bias = bg3le::load_bias();
+    const auto fn = reinterpret_cast<std::uintptr_t>(vt[slot]);
+    if (callee != nullptr && bg3le::in_text(fn - bias, 1)) {
+        const auto targets = bg3le::resolve_symbols_with("2AK11SoundEngine", callee);
+        // The function's body, up to its padding: any call or jump into one.
+        unsigned char code[0x400] = {};
+        const std::size_t n = bg3le::safe_read_some((void const*)fn, code, sizeof(code));
+        for (std::size_t i = 0; !ok && i + 5 <= n; ++i) {
+            if (code[i] == 0xcc && i + 1 < n && code[i + 1] == 0xcc) break;
+            if (code[i] != 0xe8 && code[i] != 0xe9) continue;
+            std::int32_t rel = 0;
+            std::memcpy(&rel, code + i + 1, 4);
+            const std::uintptr_t to = fn + i + 5 + rel - bias;
+            for (auto t : targets) ok = ok || t == to;
+        }
+    }
+    if (!ok) bg3le::logf("audio: the Wwise manager's slot %d does not reach %s; it is off", slot,
+                         callee != nullptr ? callee : "anything known");
+    known.emplace(slot, ok);
+    return ok;
+}
+
 template <class R, class... A>
 R call(void* mgr, int slot, A... args) {
     auto** vt = *reinterpret_cast<void***>(mgr);
+    if (!slot_checks_out(vt, slot)) {
+        if constexpr (std::is_void_v<R>) return;
+        else return R{};
+    }
     return reinterpret_cast<R (*)(void*, A...)>(vt[slot])(mgr, args...);
 }
 

@@ -187,11 +187,22 @@ whatever build is running (`src/resolve.h`):
   that loads it, a function with identical copies by a unique call site, an
   inlined instruction by the function it sits in.
 
-A target is only used when its match is unique; anything not found is logged
-(`resolve: X: no match -- leaving it off`) and its feature turns off rather
-than the game crashing. Results are cached per GNU build ID in
-`~/.cache/bg3le/`. Hotfix v4.76.31.656 moved nearly every function by 64-128
-bytes without changing it; bg3le found all 65 targets without a code change.
+A target is only used when its match is unique; anything not found is
+reported on the debug console and in the log (`WARNING: resolve: X not found
+in this build; what uses it is off`) and its feature turns off rather than the
+game crashing. Results are cached per GNU build ID in `~/.cache/bg3le/`.
+Hotfix v4.76.31.656 moved nearly every function by 64-128 bytes without
+changing it; bg3le found all its targets without a code change.
+
+Field offsets and vtable slots are checked the same way, against the engine
+code that uses them, before anything is read or called through them: the
+translated-string lock, ls::FileReader and the resource banks by the
+instructions that access them; the save visitor's typed slots by the LSF type
+code each passes; the Wwise manager's slots by the AK::SoundEngine function
+each calls; functor and set vtables against the resolved ones. libOsiris'
+globals are read off the exported `COsiris::COsiris()`, and its tuple slot off
+`COsiris::Event`. A check that fails prints a `WARNING:` line on the console
+and leaves only that feature off.
 
 When a patch does rewrite a target, `tools/make-sigs.py OLD_BG3 NEW_BG3
 name=kind:0xADDR...` takes the pattern from the old build, grows it until it

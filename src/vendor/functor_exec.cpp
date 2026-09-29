@@ -59,9 +59,13 @@ constexpr Executor kExecutors[] = {
                  0xec, 0x08, 0x08, 0x00, 0x00, 0x49, 0x89, 0xcc, 0x49, 0x89, 0xd6, 0x48}},
 };
 
-// The engine's stats::Functors vtable, read off a live Functors container.
+// stats::Functor's vtable (~dtor x2, ParseParams, Clone): Clone and the
+// deleting destructor, called only on a functor whose vtable is the engine's
+// for its type.
 constexpr int kFunctorCloneSlot = 3;
 constexpr int kFunctorDeleteSlot = 1;
+// Functors (CNamedElementManager<Functor>): ~dtor x2, Destroy, Insert.
+constexpr int kFunctorsInsertSlot = 3;
 
 using ExecuteProc = void (*)(bg3se::HitResult*, Functors*, ContextData*);
 using ExecuteInterruptProc = void (*)(bg3se::HitResult*, void* world, Functors*, ContextData*);
@@ -141,14 +145,26 @@ extern "C" bool bg3le_functors_execute(void* functors, void* context, void* worl
     return true;
 }
 
+namespace {
+std::uint64_t engine_vtable(FunctorId type);
+
+// A slot bg3le is about to call: it must point into the game's code.
+bool engine_code(std::uint64_t address) {
+    return address != 0 && bg3le::in_text(address - bg3le::load_bias(), 1);
+}
+}  // namespace
+
 // Upstream's ExecuteFunctor: the one functor, cloned into a container of its
 // own. The container is bg3se's, given the engine's vtable, since the
 // executors call through it.
 extern "C" bool bg3le_functor_execute(void* functor, void* context, void* world, char const** why) {
     auto* f = static_cast<Functor*>(functor);
     std::uint64_t fvmt = 0, clone = 0;
+    // Its vtable must be the engine's for its type, and Clone must be code.
     if (f == nullptr || !bg3le::safe_read(f, &fvmt, sizeof(fvmt))
-        || !bg3le::safe_read((void const*)(fvmt + kFunctorCloneSlot * 8), &clone, sizeof(clone))) {
+        || fvmt != engine_vtable(f->TypeId)
+        || !bg3le::safe_read((void const*)(fvmt + kFunctorCloneSlot * 8), &clone, sizeof(clone))
+        || !engine_code(clone)) {
         *why = "not a functor";
         return false;
     }
@@ -172,8 +188,9 @@ extern "C" bool bg3le_functor_execute(void* functor, void* context, void* world,
     // Nothing of the engine's is freed: the clone goes through its own
     // deleting destructor, and the list's buffer is bg3le's.
     std::uint64_t cvmt = 0, del = 0;
-    if (bg3le::safe_read(copy, &cvmt, sizeof(cvmt))
-        && bg3le::safe_read((void const*)(cvmt + kFunctorDeleteSlot * 8), &del, sizeof(del))) {
+    if (bg3le::safe_read(copy, &cvmt, sizeof(cvmt)) && cvmt == fvmt
+        && bg3le::safe_read((void const*)(cvmt + kFunctorDeleteSlot * 8), &del, sizeof(del))
+        && engine_code(del)) {
         reinterpret_cast<void (*)(Functor*)>(del)(copy);
     }
     list->Values.clear();
@@ -234,8 +251,8 @@ std::uint64_t engine_vtable(FunctorId type) {
 std::uint32_t engine_size(std::uint64_t vtable) {
     std::uint64_t clone = 0;
     unsigned char code[32] = {};
-    if (!bg3le::safe_read((void const*)(vtable + 3 * 8), &clone, sizeof(clone))
-        || !bg3le::safe_read((void const*)clone, code, sizeof(code))) {
+    if (!bg3le::safe_read((void const*)(vtable + kFunctorCloneSlot * 8), &clone, sizeof(clone))
+        || !engine_code(clone) || !bg3le::safe_read((void const*)clone, code, sizeof(code))) {
         return 0;
     }
     for (std::size_t i = 0; i + 5 <= sizeof(code); ++i) {
@@ -305,9 +322,13 @@ extern "C" void* bg3le_functors_add(void* functors, int type, char const** why) 
     std::snprintf(name, sizeof(name), "_%u", (unsigned)set->Values.size());
     functor->UniqueName = bg3se::FixedString(name);
     // The set's own Insert, through its (engine) vtable.
+    // It must be the engine's Functors class (target::FunctorsVtable).
     std::uint64_t svmt = 0, insert = 0;
     if (!bg3le::safe_read(set, &svmt, sizeof(svmt))
-        || !bg3le::safe_read((void const*)(svmt + 3 * 8), &insert, sizeof(insert))) {
+        || bg3le::target::FunctorsVtable() == 0
+        || svmt != bg3le::load_bias() + bg3le::target::FunctorsVtable()
+        || !bg3le::safe_read((void const*)(svmt + kFunctorsInsertSlot * 8), &insert, sizeof(insert))
+        || !engine_code(insert)) {
         *why = "not a functor set";
         return nullptr;
     }

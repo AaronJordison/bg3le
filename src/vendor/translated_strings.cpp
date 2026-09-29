@@ -67,10 +67,10 @@ constexpr char const* kCheckHandle = "h5b6e4138g2cf0g4d67gb825gee416cf8c54f";
 constexpr std::size_t kTranslatedStrings = 0x08;  // TextPool*[9]
 constexpr std::size_t kFallbackPool = 0x50;
 constexpr std::size_t kVersionedFallbackPool = 0x58;
-constexpr std::size_t kLock = 0xf0;               // SRWSpinLock::FastLock
+// SRWSpinLock::FastLock: its offset is read from the engine's own `lock xadd`
+// and `lock dec` on it, just after the repository load (lock_offset below).
 
 // TextPool.
-constexpr std::size_t kStrings = 0x00;    // Array<STDString*>
 constexpr std::size_t kHashKeys = 0x10;   // StaticArray<int32_t>
 constexpr std::size_t kNextIds = 0x20;    // Array<int32_t>
 constexpr std::size_t kKeys = 0x30;       // Array<RuntimeStringHandle>
@@ -154,9 +154,33 @@ T& field(void* base, std::size_t offset) {
 // SRWSpinLock, as upstream's Lock.inl. The owner id is left alone: it only
 // makes the engine's own thread re-entrant, and bg3le never calls the
 // engine while holding the lock.
+// The lock word's offset, from `lock xadd [r12+disp32],eax` (f0 41 0f c1 84 24)
+// and `lock dec dword [r12+disp32]` (f0 41 ff 8c 24) after the repository
+// load; both must agree. 0 when they are not found: the lock is then never
+// taken, since a wrong offset would write into the repository.
+std::uint32_t lock_offset() {
+    static const std::uint32_t at = [] {
+        constexpr unsigned char kXadd[] = {0xf0, 0x41, 0x0f, 0xc1, 0x84, 0x24};
+        constexpr unsigned char kDec[] = {0xf0, 0x41, 0xff, 0x8c, 0x24};
+        const std::uintptr_t load = bg3le::target::TranslatedStringRepositoryLoad();
+        const std::uintptr_t xadd = bg3le::code_near(load, kXadd);
+        const std::uintptr_t dec = bg3le::code_near(load, kDec);
+        std::uint32_t a = 0, d = 0;
+        if (xadd == 0 || dec == 0
+            || !safe_read((void const*)(load_bias() + xadd + sizeof(kXadd)), &a, sizeof(a))
+            || !safe_read((void const*)(load_bias() + dec + sizeof(kDec)), &d, sizeof(d))
+            || a != d || a == 0 || a > 0x1000) {
+            logf("loca: the repository's lock was not found; engine lookups are off");
+            return 0u;
+        }
+        return a;
+    }();
+    return at;
+}
+
 std::atomic<std::uint32_t>& lock_word(void* repo) {
     return *reinterpret_cast<std::atomic<std::uint32_t>*>(
-        static_cast<char*>(repo) + kLock);
+        static_cast<char*>(repo) + lock_offset());
 }
 
 // Bounded: bg3le runs on the game's own threads, and the repository is
@@ -164,6 +188,7 @@ std::atomic<std::uint32_t>& lock_word(void* repo) {
 // waiting on the one asking. So a busy lock is a miss, never a wait, except
 // on bg3le's own thread (spins < 0).
 bool read_lock(void* repo, int spins = 2000) {
+    if (lock_offset() == 0) return false;
     auto& fast = lock_word(repo);
     for (int i = 0; spins < 0 || i < spins; ++i) {
         if ((fast.load() & 0xfff00000u) == 0) {
@@ -178,6 +203,7 @@ bool read_lock(void* repo, int spins = 2000) {
 void read_unlock(void* repo) { lock_word(repo).fetch_sub(1); }
 
 bool write_lock(void* repo, int spins = 2000) {
+    if (lock_offset() == 0) return false;
     auto& fast = lock_word(repo);
     for (int i = 0;; ++i) {
         if (spins >= 0 && i >= spins) return false;
@@ -379,11 +405,10 @@ bool store(void* repo, char const* handle, char const* text, int spins) {
     const View view{value->data(), static_cast<std::uint32_t>(value->size()), 0};
 
     bool stored = false;
+    // Upstream also appends the value to the pool's Strings array, which owns
+    // it. That array is not checked by anything, so bg3le leaves it be and
+    // keeps its string alive itself (one small allocation per edit).
     void* pool = field<void*>(repo, kTranslatedStrings);
-    auto& strings = field<ArrayView>(pool, kStrings);
-    if (strings.size < strings.capacity) {
-        static_cast<bg3se::STDString**>(strings.buf)[strings.size++] = value;
-    }
 
     auto& values = field<StaticArrayView>(pool, kValues);
     const int index = find_index(pool, id, hash);

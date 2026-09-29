@@ -20,6 +20,7 @@
 #include "debug_server.h"
 #include "hook.h"
 #include "log.h"
+#include "mem.h"
 #include "resolve.h"
 #include "targets.h"
 #include "lua_host.h"
@@ -43,16 +44,15 @@ constexpr unsigned char kVariableHelperPrologue[] = {
     0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x10,
     0x49, 0x89, 0xfe, 0x48, 0x8b, 0xbe, 0xb0, 0x00, 0x00, 0x00};
 
-constexpr std::size_t kLsfVisitorOffset = 0xb0;
+constexpr std::size_t kLsfVisitorOffset = 0xb0;  // v4.76; read from the engine by lsf_visitor_offset()
 
 // ObjectVisitor slots in this build. The first twenty match bg3se's
 // Serialization.h plus one for the Itanium destructor pair; the typed
 // Visit overloads are in declaration order, the reverse of MSVC's grouping.
 //
 // Upstream's Visit* are one overload set, which MSVC lays out reversed and
-// Itanium in declaration order: slot = 77 - bg3se's index. Each typed slot
-// was checked against the LSF type code its body passes (Bool 19, UInt8 1,
-// Float 6, Int64 32, Double 7, Guid 31).
+// Itanium in declaration order: slot = 77 - bg3se's index. The typed slots
+// are checked at runtime by the LSF type code each passes (lsf_slots_ok).
 enum Slot : int {
     kIsReading = 9,
     kEnterRegion = 14,
@@ -501,11 +501,71 @@ void savegame_visit(void* lsf) {
 using VisitProc = std::uint64_t (*)(void*, void*, void*);
 VisitProc g_original_visit = nullptr;
 
+// Where the SavegameVisitor holds the LSF ObjectVisitor: the disp32 of the
+// visit's own `mov rdi, [rsi+disp32]` (48 8b be) after `mov r14, rdi`.
+std::uint32_t lsf_visitor_offset() {
+    static const std::uint32_t at = [] {
+        constexpr unsigned char kLoad[] = {0x49, 0x89, 0xfe, 0x48, 0x8b, 0xbe};
+        const std::uintptr_t hit = code_near(bg3le::target::VariableHelperVisit(), kLoad, 0x40);
+        std::uint32_t disp = 0;
+        if (hit == 0 || !safe_read((void const*)(load_bias() + hit + sizeof(kLoad)), &disp, sizeof(disp))
+            || disp == 0 || disp > 0x1000) {
+            logf("savegame: the visitor's LSF field was not found; PersistentVars are off");
+            return 0u;
+        }
+        if (disp != kLsfVisitorOffset) logf("savegame: the LSF visitor is at +%#x (was +%#zx)", disp, kLsfVisitorOffset);
+        return disp;
+    }();
+    return at;
+}
+
+// Each numeric typed slot must hand its LSF type code to VisitRaw
+// (`mov r8d, code`); the string slots sit between them by the same rule.
+bool lsf_slots_ok(std::uintptr_t vt) {
+    struct Typed { int slot; unsigned char code; };
+    constexpr Typed kTyped[] = {{kVisitUInt8, 1}, {kVisitBool, 19}, {kVisitUInt32, 5},
+                                {kVisitDouble, 7}, {kVisitFloat, 6}, {kVisitInt64, 32},
+                                {kVisitGuid, 31}};
+    const std::uintptr_t bias = load_bias();
+    for (auto const& t : kTyped) {
+        std::uintptr_t fn = 0;
+        if (!safe_read((void const*)(vt + t.slot * 8), &fn, sizeof(fn)) || !in_text(fn - bias, 1)) {
+            statusf("WARNING: savegame: LSF visitor slot %d is not code; PersistentVars are off", t.slot);
+            return false;
+        }
+        unsigned char body[0x600] = {};
+        std::size_t n = safe_read_some((void const*)fn, body, sizeof(body));
+        for (std::size_t i = 0; i + 1 < n; ++i) {
+            if (body[i] == 0xcc && body[i + 1] == 0xcc) { n = i; break; }
+        }
+        const unsigned char mov[] = {0x41, 0xb8, t.code, 0, 0, 0};
+        if (::memmem(body, n, mov, sizeof(mov)) == nullptr) {
+            statusf("WARNING: savegame: LSF visitor slot %d does not pass type %u; PersistentVars are off",
+                    t.slot, t.code);
+            return false;
+        }
+    }
+    return true;
+}
+
 std::uint64_t visit_hook(void* helper, void* visitor, void* extra) {
-    void* lsf = visitor != nullptr
-        ? *reinterpret_cast<void**>(static_cast<char*>(visitor) + kLsfVisitorOffset)
-        : nullptr;
-    if (lsf != nullptr) savegame_visit(lsf);
+    void* lsf = nullptr;
+    const std::uint32_t offset = lsf_visitor_offset();
+    if (visitor != nullptr && offset != 0) {
+        safe_read(static_cast<char*>(visitor) + offset, &lsf, sizeof(lsf));
+    }
+    if (lsf != nullptr) {
+        static std::uintptr_t checked = 0;
+        static bool usable = false;
+        std::uintptr_t vt = 0;
+        if (safe_read(lsf, &vt, sizeof(vt)) && vt != checked) {
+            checked = vt;
+            usable = lsf_slots_ok(vt);
+            logf("savegame: LSF visitor vtable image+%#lx%s", (unsigned long)(vt - load_bias()),
+                 usable ? "" : ", slots off");
+        }
+        if (vt == checked && usable) savegame_visit(lsf);
+    }
     return g_original_visit(helper, visitor, extra);
 }
 

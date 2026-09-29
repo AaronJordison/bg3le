@@ -128,7 +128,7 @@ const InitFn kBoostManage = {
 void* verified(InitFn const& fn) {
     const std::uintptr_t bias = load_bias();
     // The bytes near its start; StatsDisp counts from where they matched.
-    const std::uintptr_t at = code_near(fn.Offset(), fn.Bytes, fn.Length);
+    const std::uintptr_t at = code_near_n(fn.Offset(), fn.Bytes, fn.Length);
     if (at == 0) {
         logf("stat sync: %s was not found on this build", fn.Name);
         return nullptr;

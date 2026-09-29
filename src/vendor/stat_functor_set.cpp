@@ -162,9 +162,13 @@ extern "C" bool bg3le_stats_set_functors(void* object, char const* attribute, ch
         FixedString const& textKey = it.Key();
         auto* set = makeSet(&stats->StatsFunctors, obj, &attr, &textKey);
         if (set == nullptr) continue;
+        // The set MakeSet returns must be the engine's Functors class.
         std::uint64_t vmt = 0, insert = 0;
         if (!bg3le::safe_read(set, &vmt, sizeof(vmt))
-            || !bg3le::safe_read((void const*)(vmt + kFunctorsInsertSlot * 8), &insert, sizeof(insert))) {
+            || vmt != bg3le::load_bias() + bg3le::target::FunctorsVtable()
+            || !bg3le::safe_read((void const*)(vmt + kFunctorsInsertSlot * 8), &insert, sizeof(insert))
+            || !bg3le::in_text(insert - bg3le::load_bias(), 1)) {
+            bg3le::logf("functors: MakeSet's set is not the engine's Functors; not inserting");
             continue;
         }
         std::string_view rest = it.Value();

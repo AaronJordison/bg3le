@@ -38,7 +38,10 @@ namespace {
 // once a frame; and the state names, char const* names[35] in .data.rel.ro.
 constexpr unsigned char kMachineUpdatePrologue[] = {
     0x41, 0x56, 0x53, 0x50, 0x80, 0x7f, 0x08, 0x00, 0x75, 0x08};
-constexpr int kStateCount = 35;
+// names[] holds 35 on v4.76. The cap only bounds the index: each entry is
+// checked to be a short printable name before it is used, so a table that
+// changed length reads "Unknown", never a stray pointer.
+constexpr int kStateLimit = 64;
 
 constexpr std::size_t kStateId = 0x10;
 
@@ -57,9 +60,18 @@ StateProc g_load_module_exit = nullptr;
 std::atomic<bool> g_left_load_module{false};
 
 char const* state_name(std::uint32_t state) {
-    if (state >= kStateCount || target::StateNames() == 0) return "Unknown";
+    if (state >= kStateLimit || target::StateNames() == 0) return "Unknown";
     auto* const* names = reinterpret_cast<char const* const*>(load_bias() + target::StateNames());
-    return names[state] != nullptr ? names[state] : "Unknown";
+    char const* name = nullptr;
+    char text[48];
+    if (!safe_read(&names[state], &name, sizeof(name)) || name == nullptr
+        || !safe_cstr(name, text, sizeof(text)) || text[0] == '\0') {
+        return "Unknown";
+    }
+    for (char const* c = text; *c != '\0'; ++c) {
+        if (*c < 0x20 || *c > 0x7e) return "Unknown";
+    }
+    return name;
 }
 
 bool state_id(void* state, std::uint32_t* out) {

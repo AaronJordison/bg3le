@@ -207,8 +207,8 @@ std::uintptr_t resolve_code(const Sig& sig) {
     return off;
 }
 
-std::uintptr_t code_near(std::uintptr_t from, const unsigned char* bytes, std::size_t len,
-                         std::size_t window) {
+std::uintptr_t code_near_n(std::uintptr_t from, const unsigned char* bytes, std::size_t len,
+                           std::size_t window) {
     std::uintptr_t text = 0;
     std::size_t size = 0;
     if (from == 0 || len == 0 || !text_range(&text, &size)) return 0;
@@ -228,6 +228,18 @@ std::uintptr_t resolve_symbol(const char* mangled) {
         return 0;
     }
     return reinterpret_cast<std::uintptr_t>(p) - load_bias();
+}
+
+std::vector<std::uintptr_t> resolve_symbols_with(const char* a, const char* b) {
+    std::vector<std::uintptr_t> out;
+    if (g_symbols == nullptr || a == nullptr) return out;
+    const std::uintptr_t bias = load_bias();
+    g_symbols->for_each([&](const std::string& name, std::uintptr_t at) {
+        if (name.find(a) != std::string::npos && (b == nullptr || name.find(b) != std::string::npos)) {
+            out.push_back(at - bias);
+        }
+    });
+    return out;
 }
 
 std::uintptr_t resolve_vtable(const char* ztv_mangled) {

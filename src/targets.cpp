@@ -92,6 +92,8 @@ BG3LE_TARGET(TemplatesManager,
              resolve_rip(Sig{"TemplatesManager", 0x2387b76, "48 8b 15 ?? ?? ?? ?? 48 8b 0d ?? ?? ?? ?? 4c 8b 05 ?? ?? ?? ?? 0f b6 7e 04 e8 ?? ?? ?? ?? 48 85 c0 74 16"}, 3, 7))
 BG3LE_TARGET(ResourcesGlobal,
              resolve_rip(Sig{"ResourcesGlobal", 0x21d176e, "48 8b 05 ?? ?? ?? ?? 49 89 fc 49 89 d5 49 89 f6 48 8b b8 80 00 00 00"}, 3, 7))
+BG3LE_TARGET(ResourcesGlobalLoad,
+             resolve_code(Sig{"ResourcesGlobal", 0x21d176e, "48 8b 05 ?? ?? ?? ?? 49 89 fc 49 89 d5 49 89 f6 48 8b b8 80 00 00 00"}))
 BG3LE_TARGET(PathRoots,
              resolve_rip(Sig{"PathRoots", 0x227028b, "4c 8d 25 ?? ?? ?? ?? 49 89 d6 48 89 fb 4b 8b 0c fc 0f b6 41 0f 84 c0 79 05 8b 41 08 eb 03 83 e0 7f 41 0f b6 4e 0f"}, 3, 7))
 BG3LE_TARGET(InputManager,
@@ -102,6 +104,8 @@ BG3LE_TARGET(StringKeysManager,
              resolve_rip(Sig{"StringKeysManager", 0x2be55a5, "48 8b 35 ?? ?? ?? ?? 31 d2 89 e8 f7 76 18 48 c1 e2 03"}, 3, 7))
 BG3LE_TARGET(TranslatedStringRepository,
              resolve_rip(Sig{"TranslatedStringRepository", 0x227ce15, "4c 8b 25 ?? ?? ?? ?? 0f 11 00 8b 84 24 88 05 00 00"}, 3, 7))
+BG3LE_TARGET(TranslatedStringRepositoryLoad,
+             resolve_code(Sig{"TranslatedStringRepository", 0x227ce15, "4c 8b 25 ?? ?? ?? ?? 0f 11 00 8b 84 24 88 05 00 00"}))
 BG3LE_TARGET(FunctorExec1,
              resolve_code(Sig{"FunctorExec1", 0x3c7df30, "55 41 57 41 56 41 55 41 54 53 48 81 ec c8 04 00 00 49 89 f4 48 8d b2 40 01 00 00"}))
 BG3LE_TARGET(FunctorExec2,

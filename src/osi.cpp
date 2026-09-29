@@ -13,7 +13,9 @@
 #include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
+#include "debug_server.h"
 #include "hook.h"
 #include "log.h"
 #include "vendor/cache_lock.h"
@@ -134,7 +136,7 @@ namespace {
 // reversed against the Windows build -- the walk validates itself against the
 // names we already enumerated rather than trusting them.
 //
-//   [libOsiris + kFunctionDbHolder] -> holder
+//   [libOsiris + function_db_holder()] -> holder
 //   holder + 0x10                   -> TypeDb::HashSlot[1023], stride 0x18
 //   HashSlot + 0x00                 -> item count (NOT a pointer)
 //   HashSlot + 0x08                 -> TMap root node
@@ -143,7 +145,11 @@ namespace {
 //   OsiFunctionDef + 0x18           -> FunctionSignature*
 //   FunctionSignature + 0x08        -> const char* Name
 //   FunctionSignature + 0x18/+0x20  -> out-param bitmask / byte count
+// Recorded for v4.76; osiris_globals() reads the live ones off COsiris::COsiris().
 constexpr std::uintptr_t kFunctionDbHolder = 0x119d50;
+constexpr std::uintptr_t kNodeDbHolder = 0x119eb8;
+constexpr std::uintptr_t kDatabaseDbHolder = 0x119ec0;
+constexpr std::uintptr_t kAdapterDbHolder = 0x119ec8;
 
 // Inside OsiFunctionDef (bg3se's GameDefinitions/Osiris.h): VMT, three
 // uint32s, the signature pointer at +0x18, a NodeRef, then FunctionType,
@@ -197,6 +203,86 @@ template <typename T>
 bool peek(std::uintptr_t addr, T* out) {
     if (addr < 0x1000) return false;
     return safe_read(reinterpret_cast<const void*>(addr), out, sizeof(T));
+}
+
+// libOsiris' own definition: bg3le interposes some COsiris functions, and
+// the executable's PLT can stand in for others under RTLD_DEFAULT.
+std::uintptr_t osiris_symbol(const char* name) {
+    void* lib = ::dlopen("libOsiris.so", RTLD_NOW | RTLD_NOLOAD);
+    if (lib == nullptr) return 0;
+    const auto at = reinterpret_cast<std::uintptr_t>(::dlsym(lib, name));
+    ::dlclose(lib);
+    return at;
+}
+
+// The globals the exported COsiris::COsiris() stores: the function db is its
+// first store after the hash init loop (bound kBuckets * kSlotStride),
+// the node, database and adapter lists are its only run of three adjacent
+// stores. Recorded offsets stand in if the code differs; every use validates.
+struct OsirisGlobals {
+    std::uintptr_t FunctionDb = kFunctionDbHolder;
+    std::uintptr_t NodeDb = kNodeDbHolder;
+    std::uintptr_t DatabaseDb = kDatabaseDbHolder;
+    std::uintptr_t AdapterDb = kAdapterDbHolder;
+};
+
+OsirisGlobals const& osiris_globals() {
+    static const OsirisGlobals g = [] {
+        OsirisGlobals out;
+        std::uintptr_t base = 0;
+        ::dl_iterate_phdr(find_osiris, &base);
+        const auto ctor = osiris_symbol("_ZN7COsirisC1Ev");
+        unsigned char code[0x800] = {};
+        const std::size_t n = base == 0 || ctor == 0 ? 0 : safe_read_some((void const*)ctor, code, sizeof(code));
+        const std::uint32_t bound = kBuckets * kSlotStride;
+        std::size_t loop = 0;
+        std::vector<std::pair<std::size_t, std::uintptr_t>> stores;  // mov [rip+disp32], r64
+        for (std::size_t i = 0; i + 7 <= n; ++i) {
+            std::int32_t disp = 0;
+            std::memcpy(&disp, code + i + 3, 4);
+            if ((code[i] == 0x48 || code[i] == 0x4c) && code[i + 1] == 0x89 && (code[i + 2] & 0xc7) == 0x05)
+                stores.emplace_back(i, ctor + i + 7 + disp - base);
+            if (loop == 0 && code[i] == 0x81 && (code[i + 1] & 0xf8) == 0xf8
+                && std::memcmp(code + i + 2, &bound, 4) == 0)
+                loop = i;
+        }
+        std::uintptr_t fdb = 0, nodes = 0, databases = 0, adapters = 0;
+        int runs = 0;
+        for (std::size_t k = 0; k < stores.size(); ++k) {
+            if (fdb == 0 && loop != 0 && stores[k].first > loop) fdb = stores[k].second;
+            if (k >= 2 && stores[k].second == stores[k - 1].second + 8
+                && stores[k - 1].second == stores[k - 2].second + 8) {
+                nodes = stores[k - 2].second;
+                databases = stores[k - 1].second;
+                adapters = stores[k].second;
+                ++runs;
+            }
+        }
+        if (fdb != 0 && runs == 1) {
+            out = OsirisGlobals{fdb, nodes, databases, adapters};
+            if (fdb != kFunctionDbHolder || nodes != kNodeDbHolder || databases != kDatabaseDbHolder
+                || adapters != kAdapterDbHolder)
+                logf("osiris: globals moved: functions +%#lx, nodes +%#lx, databases +%#lx, adapters +%#lx",
+                     (unsigned long)fdb, (unsigned long)nodes, (unsigned long)databases,
+                     (unsigned long)adapters);
+        } else {
+            statusf("WARNING: osiris: COsiris::COsiris() no longer shows its globals (ctor +%#lx, %zu bytes, "
+                    "loop %#zx, %zu stores, %d runs); using v4.76 offsets",
+                    (unsigned long)(ctor - base), n, loop, stores.size(), runs);
+        }
+        return out;
+    }();
+    return g;
+}
+
+std::uintptr_t function_db_holder() { return osiris_globals().FunctionDb; }
+
+// The global the ctor stored first, then the window around the function db.
+std::vector<std::uintptr_t> list_slots(std::uintptr_t direct, std::intptr_t window) {
+    std::vector<std::uintptr_t> slots{direct};
+    for (std::intptr_t delta = -window; delta <= window; delta += 8)
+        if (function_db_holder() + delta != direct) slots.push_back(function_db_holder() + delta);
+    return slots;
 }
 
 // One object, read in a single call and then parsed locally.
@@ -464,9 +550,9 @@ NodeList find_database_db(std::uintptr_t base) {
     // A wider window than the node list needed: the globals are a run of
     // pointer slots, but which run and in what order is this build's
     // business, not bg3se's Windows order.
-    for (std::intptr_t delta = -0x400; delta <= 0x400; delta += 8) {
+    for (std::uintptr_t slot : list_slots(osiris_globals().DatabaseDb, 0x400)) {
         std::uintptr_t db = 0;
-        if (!peek(base + kFunctionDbHolder + delta, &db) || db < 0x1000) {
+        if (!peek(base + slot, &db) || db < 0x1000) {
             continue;
         }
 
@@ -500,14 +586,13 @@ NodeList find_database_db(std::uintptr_t base) {
             if (agreed > 0) {
                 logf("osiris: candidate list at libOsiris+%#lx (%u entries) "
                      "had %d ids agree and %d disagree",
-                     (unsigned long)(kFunctionDbHolder + delta), size,
-                     agreed, disagreed);
+                     (unsigned long)slot, size, agreed, disagreed);
             }
             continue;
         }
 
         logf("osiris: database list at libOsiris+%#lx holds %u databases",
-             (unsigned long)(kFunctionDbHolder + delta), size);
+             (unsigned long)slot, size);
         g_databases = NodeList{begin, size};
         return g_databases;
     }
@@ -723,9 +808,9 @@ bool find_string_table() {
 
 
 NodeList find_node_db(std::uintptr_t base) {
-    for (std::intptr_t delta = -0x80; delta <= 0x80; delta += 8) {
+    for (std::uintptr_t slot : list_slots(osiris_globals().NodeDb, 0x80)) {
         std::uintptr_t db = 0;
-        if (!peek(base + kFunctionDbHolder + delta, &db) || db < 0x1000) {
+        if (!peek(base + slot, &db) || db < 0x1000) {
             continue;
         }
 
@@ -752,7 +837,7 @@ NodeList find_node_db(std::uintptr_t base) {
         if (checked == 0) continue;
 
         logf("osiris: node list at libOsiris+%#lx holds %u nodes",
-             (unsigned long)(kFunctionDbHolder + delta), size);
+             (unsigned long)slot, size);
         g_nodes = NodeList{begin, size};
         return g_nodes;
     }
@@ -1494,7 +1579,7 @@ bool bind_defs() {
     if (base == 0) return false;
 
     std::uintptr_t holder = 0;
-    if (!peek(base + kFunctionDbHolder, &holder) || holder < 0x1000) {
+    if (!peek(base + function_db_holder(), &holder) || holder < 0x1000) {
         return false;
     }
 
@@ -1797,7 +1882,7 @@ std::size_t load_out_param_counts(std::vector<Function>* functions,
     learn_aliases();
 
     std::uintptr_t holder = 0;
-    if (!peek(base + kFunctionDbHolder, &holder) || holder < 0x1000) {
+    if (!peek(base + function_db_holder(), &holder) || holder < 0x1000) {
         logf("osiris: function db holder unreadable");
         return 0;
     }
@@ -2394,6 +2479,27 @@ bool plausible_method(std::uintptr_t at) {
     return true;
 }
 
+// The exported COsiris::Event raises an event by inserting into its node:
+// it must still call [reg+kInsertTuple]. Delete, the next slot, is only
+// called from an unexported dispatcher, so it rests on the class checks.
+bool tuple_slots_ok() {
+    static const bool ok = [] {
+        const auto event = osiris_symbol("_ZN7COsiris5EventEjP16COsiArgumentDesc");
+        unsigned char code[0x800] = {};
+        const std::size_t n = event == 0 ? 0 : safe_read_some((void const*)event, code, sizeof(code));
+        for (std::size_t i = 0; i + 3 <= n; ++i) {
+            if (code[i] == 0xcc && code[i + 1] == 0xcc) break;
+            const unsigned char modrm = code[i + 1];
+            if (code[i] == 0xff && (modrm & 0xf8) == 0x50 && modrm != 0x54 && code[i + 2] == kInsertTuple)
+                return true;  // call *disp8(%reg)
+        }
+        statusf("WARNING: osiris: COsiris::Event no longer calls slot %#lx; tuple inserts are off",
+                (unsigned long)kInsertTuple);
+        return false;
+    }();
+    return ok;
+}
+
 // One argument as the TypedValue Osiris wants for its declared type.
 // Strings are interned, and the handles collected for the caller to release.
 bool encode_arg(char const* key, std::size_t i, std::uint16_t declared,
@@ -2539,7 +2645,7 @@ Status insert_tuple(char const* key, std::vector<Value> const& args,
     }
 
     std::uintptr_t target = 0;
-    if (!peek(vtable + slot, &target) || !plausible_method(target)) {
+    if (!tuple_slots_ok() || !peek(vtable + slot, &target) || !plausible_method(target)) {
         return fail("the node's tuple slot does not hold a function");
     }
 
@@ -2581,9 +2687,6 @@ Status insert_tuple(char const* key, std::vector<Value> const& args,
 // identity one, with no constants, passes the tuple through as it is.
 constexpr std::uintptr_t kIsValid = 0x28;
 
-// The adapter list, which IsValid indexes by its second argument.
-constexpr std::uintptr_t kAdapterDbHolder = 0x119ec8;
-
 // Inside an Adapter: libc++'s std::map<u8,u8> VarToColumnMaps at +0x08
 // (its size at +0x18), vector<int8> ColumnToVarMaps at +0x20, and the
 // constants SmallTuple at +0x38.
@@ -2617,7 +2720,7 @@ std::uint32_t identity_adapter(std::size_t columns) {
     std::uintptr_t db = 0;
     std::uint32_t size = 0;
     std::uintptr_t begin = 0;
-    if (base == 0 || !peek(base + kAdapterDbHolder, &db) || db < 0x1000
+    if (base == 0 || !peek(base + osiris_globals().AdapterDb, &db) || db < 0x1000
         || !peek(db, &size) || !peek(db + 0x08, &begin) || begin < 0x1000
         || size == 0 || size > (1u << 20)) {
         return 0;
@@ -2958,6 +3061,7 @@ bool install_node_hooks() {
              "listeners stay inactive", classes.size());
         return false;
     }
+    if (!tuple_slots_ok()) return false;
 
     for (auto const& entry : classes) {
         Hooked hooked;

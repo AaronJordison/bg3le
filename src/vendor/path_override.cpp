@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <shared_mutex>
@@ -73,8 +74,45 @@ std::string absolute(char const* path) {
 constexpr unsigned char kFileReaderDtorHead[] = {
     0x41, 0x56, 0x53, 0x50, 0x0f, 0x57, 0xc0, 0x48, 0x89, 0xfb,
     0x0f, 0x11, 0x47, 0x08, 0x4c, 0x8b, 0xb7, 0x88, 0x00, 0x00};
-constexpr std::size_t kFileReaderSize = 0x90;  // the engine's callers' stack slot
+// sizeof(ls::FileReader) is 0x90 on v4.76, its constructor's highest store
+// being 8 bytes at +0x88. bg3le's slot is far larger, and the constructor is
+// checked to fit it (reader_layout_ok) before bg3le constructs one.
+constexpr std::size_t kFileReaderSpace = 0x400;
 void (*g_dtor)(void*) = nullptr;
+
+// The constructor's stores: it must initialise the fields bg3le reads (the
+// loaded flag at +0, the data at +0x8, the size at +0x18), and its highest
+// `movq $imm, disp32(%rdi)` must fall inside kFileReaderSpace.
+bool reader_layout_ok() {
+    static const bool ok = [] {
+        const std::uintptr_t ctor = bg3le::target::FileReaderCtor();
+        constexpr unsigned char kFlag[] = {0xc6, 0x07, 0x00};        // movb $0x0,(%rdi)
+        constexpr unsigned char kData[] = {0x0f, 0x11, 0x47, 0x08};  // movups %xmm0,0x8(%rdi)
+        constexpr unsigned char kSize[] = {0x0f, 0x11, 0x47, 0x18};  // movups %xmm0,0x18(%rdi)
+        if (bg3le::code_near(ctor, kFlag, 0x80) == 0 || bg3le::code_near(ctor, kData, 0x80) == 0
+            || bg3le::code_near(ctor, kSize, 0x80) == 0) {
+            bg3le::logf("io: ls::FileReader's constructor does not set the fields bg3le reads");
+            return false;
+        }
+        constexpr unsigned char kStore[] = {0x48, 0xc7, 0x87};       // movq $imm32, disp32(%rdi)
+        std::uint32_t highest = 0;
+        for (std::uintptr_t at = ctor, end = ctor + 0x80; at < end;) {
+            const std::uintptr_t hit = bg3le::code_near(at, kStore, end - at);
+            if (hit == 0) break;
+            std::uint32_t disp = 0;
+            if (bg3le::safe_read((void const*)(bg3le::load_bias() + hit + sizeof(kStore)), &disp, sizeof(disp)) && disp < 0x100000)
+                highest = std::max(highest, disp + 8);
+            at = hit + 1;
+        }
+        if (highest == 0 || highest > kFileReaderSpace) {
+            bg3le::logf("io: ls::FileReader is %#x bytes, more than bg3le's %#zx; engine file reads are off",
+                 highest, kFileReaderSpace);
+            return false;
+        }
+        return true;
+    }();
+    return ok;
+}
 
 }  // namespace
 
@@ -83,8 +121,8 @@ namespace bg3le {
 // Upstream's script::LoadExternalFile for PathRootType::Data: a FileReader
 // on ToPath(path, Data), through the hook so overrides apply.
 bool engine_read_file(char const* relative, std::string* out) {
-    if (g_real == nullptr || g_dtor == nullptr || relative == nullptr) return false;
-    alignas(16) unsigned char reader[kFileReaderSize] = {};
+    if (g_real == nullptr || g_dtor == nullptr || relative == nullptr || !reader_layout_ok()) return false;
+    alignas(16) unsigned char reader[kFileReaderSpace] = {};
     bg3se::Path path;
     path.Name = absolute(relative).c_str();
     file_reader_ctor(reader, &path, 1, 0);

@@ -1113,6 +1113,15 @@ constexpr std::size_t kObjectRequirements = 176;
 static_assert(offsetof(bg3se::stats::Object, Requirements) == kObjectRequirements,
               "Object::Requirements where the live walk put it");
 
+// The walk is only trusted while it still agrees with the build: where it
+// puts ModifierListIndex against where bg3le found it at runtime. A field of
+// the walk, or null when they differ (which read_as and write_bytes refuse).
+constexpr std::size_t kObjectListIndexByWalk = 228;
+char* walked(void const* object, std::size_t offset) {
+    if (object == nullptr || state().ListIndexOffset != kObjectListIndexByWalk) return nullptr;
+    return (char*)object + offset;
+}
+
 // A bg3se HashMap: HashKeys, NextIds, Keys, then Values. Looking a key up
 // means walking the buckets upstream, but Keys and Values are parallel
 // arrays, so a linear walk finds the same entry without reimplementing the
@@ -2418,7 +2427,7 @@ extern "C" int bg3le_stats_requirement_count(void const* object) {
     const CacheLock lock(stats_cache_lock());
     std::uint32_t size = 0;
     if (object == nullptr
-        || !read_as((char const*)object + kObjectRequirements + 12, &size)) {
+        || !read_as(walked(object, kObjectRequirements + 12), &size)) {
         return -1;
     }
     return size > 4096 ? -1 : (int)size;
@@ -2433,7 +2442,7 @@ extern "C" bool bg3le_stats_requirement_at(void const* object, int index,
     if (count < 0 || index < 0 || index >= count) return false;
 
     void const* buffer = nullptr;
-    if (!read_as((char const*)object + kObjectRequirements, &buffer)
+    if (!read_as(walked(object, kObjectRequirements), &buffer)
         || buffer == nullptr) {
         return false;
     }
@@ -2463,7 +2472,8 @@ extern "C" bool bg3le_stats_requirements_set(void const* object,
                                              std::size_t count) {
     const CacheLock lock(stats_cache_lock());
     if (object == nullptr || count > 4096) return false;
-    auto* array = (char*)object + kObjectRequirements;
+    auto* array = walked(object, kObjectRequirements);
+    if (array == nullptr) return false;
 
     std::uint64_t buffer = 0;
     std::uint32_t capacity = 0;
@@ -2568,7 +2578,8 @@ extern "C" bool bg3le_stats_ai_flags_set(void const* object, char const* text) {
         && !bg3le_fixed_string_intern(text, &id)) {
         return false;
     }
-    return write_bytes((void*)((char const*)object + kObjectAIFlags), &id,
+    char* at = walked(object, kObjectAIFlags);
+    return at != nullptr && write_bytes(at, &id,
                        sizeof(id));
 }
 
@@ -2628,7 +2639,8 @@ extern "C" int bg3le_stats_roll_set(void const* object, char const* attribute,
         || count > 256) {
         return 3;
     }
-    auto const* map = (char const*)object + kObjectRollConditions;
+    auto const* map = walked(object, kObjectRollConditions);
+    if (map == nullptr) return 3;
     const int slot = hash_map_slot(map, attribute);
 
     std::vector<std::int32_t> entries;
@@ -2742,8 +2754,9 @@ extern "C" bool bg3le_stats_copy_from(void const* dest, void const* source,
     // AIFlags is a FixedString on the object rather than an indexed
     // property, which is why upstream assigns it separately.
     std::uint32_t flags = 0;
-    if (read_as((char const*)source + kObjectAIFlags, &flags)) {
-        std::memcpy((char*)dest + kObjectAIFlags, &flags, sizeof(flags));
+    char* flagsAt = walked(dest, kObjectAIFlags);
+    if (flagsAt != nullptr && read_as(walked(source, kObjectAIFlags), &flags)) {
+        std::memcpy(flagsAt, &flags, sizeof(flags));
     }
 
     if (total != nullptr) *total = n;
@@ -2813,7 +2826,7 @@ extern "C" char const* bg3le_stats_ai_flags(void const* object) {
     const CacheLock lock(stats_cache_lock());
     if (object == nullptr || !state().Attributes) return nullptr;
     std::uint32_t index = 0;
-    if (!read_as((char const*)object + kObjectAIFlags, &index)) return nullptr;
+    if (!read_as(walked(object, kObjectAIFlags), &index)) return nullptr;
     char const* text = bg3le_fixed_string(index, nullptr);
     return text != nullptr ? text : "";
 }
@@ -2825,7 +2838,8 @@ extern "C" int bg3le_stats_roll_condition_count(void const* object,
                                                 char const* attribute) {
     const CacheLock lock(stats_cache_lock());
     if (object == nullptr || !state().Attributes) return -1;
-    auto const* map = (char const*)object + kObjectRollConditions;
+    auto const* map = walked(object, kObjectRollConditions);
+    if (map == nullptr) return -1;
     const int slot = hash_map_slot(map, attribute);
     if (slot < 0) return -1;
 
@@ -2850,7 +2864,8 @@ extern "C" bool bg3le_stats_roll_condition_at(void const* object,
     const int count = bg3le_stats_roll_condition_count(object, attribute);
     if (count < 0 || index < 0 || index >= count) return false;
 
-    auto const* map = (char const*)object + kObjectRollConditions;
+    auto const* map = walked(object, kObjectRollConditions);
+    if (map == nullptr) return false;
     const int slot = hash_map_slot(map, attribute);
     HashMapRef m{};
     if (slot < 0 || !read_hash_map(map, &m)) return false;

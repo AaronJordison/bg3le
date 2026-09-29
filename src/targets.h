@@ -71,11 +71,15 @@ std::uintptr_t ParserContext();
 std::uintptr_t TextureAtlasMap();
 std::uintptr_t TemplatesManager();
 std::uintptr_t ResourcesGlobal();
+// The instruction that loads it; the engine indexes its banks just after.
+std::uintptr_t ResourcesGlobalLoad();
 std::uintptr_t PathRoots();
 std::uintptr_t InputManager();
 std::uintptr_t GlobalSwitches();
 std::uintptr_t StringKeysManager();
 std::uintptr_t TranslatedStringRepository();
+// The instruction that loads it; its lock is taken just after.
+std::uintptr_t TranslatedStringRepositoryLoad();
 // stats functor executors, by FunctorContextType 1..9
 std::uintptr_t FunctorExec1();
 std::uintptr_t FunctorExec2();
