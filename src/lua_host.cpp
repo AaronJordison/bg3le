@@ -13963,12 +13963,7 @@ local function load_mod_from(name, uuid, read, report)
   -- BootstrapClient.lua, and a mod that ships only one runs only there.
   local boot = Ext.IsClient() and "BootstrapClient.lua" or "BootstrapServer.lua"
   local source = read("Lua/" .. boot)
-  if not source then
-    Ext.Log.Print(string.format(
-      "bg3le: %s has no %s; nothing to run %s-side", name, boot,
-      Ext.IsClient() and "client" or "server"))
-    return
-  end
+  if not source then return end
 
   -- Upstream names the script it is about to run, which is what tells you
   -- the order mods actually loaded in.
