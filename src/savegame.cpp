@@ -539,7 +539,10 @@ bool lsf_slots_ok(std::uintptr_t vt) {
             if (body[i] == 0xcc && body[i + 1] == 0xcc) { n = i; break; }
         }
         const unsigned char mov[] = {0x41, 0xb8, t.code, 0, 0, 0};
-        if (::memmem(body, n, mov, sizeof(mov)) == nullptr) {
+        // The writer's Guid slot (image+0x7af1028's on v4.76) writes its 16 bytes itself: mov edx, 16.
+        const unsigned char size16[] = {0xba, 0x10, 0, 0, 0};
+        const bool guidBySize = t.slot == kVisitGuid && ::memmem(body, n, size16, sizeof(size16)) != nullptr;
+        if (::memmem(body, n, mov, sizeof(mov)) == nullptr && !guidBySize) {
             statusf("WARNING: savegame: LSF visitor slot %d does not pass type %u; PersistentVars are off",
                     t.slot, t.code);
             return false;

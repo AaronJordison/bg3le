@@ -3031,14 +3031,19 @@ void watched_delete(void* node, void* tuple) {
 }
 
 bool install_node_hooks() {
-    if (g_watching) return true;
     if (g_nodes.First == 0 || !bind_defs()) return false;
 
-    // Naming a node needs the reverse of the function database.
-    def_names().clear();
-    for (auto const& entry : database()) {
-        if (entry.second.Def != 0) def_names()[entry.second.Def] = entry.first;
+    // Naming a node needs the reverse of the function database. Rebuilt on
+    // every call: a story reload gives every def a new address, and the hooks
+    // stay installed across it.
+    {
+        const CacheLock lock(osiris_cache_lock());
+        def_names().clear();
+        for (auto const& entry : database()) {
+            if (entry.second.Def != 0) def_names()[entry.second.Def] = entry.first;
+        }
     }
+    if (g_watching) return true;
 
     // The two classes that hold tuples, found from the nodes that use
     // them rather than from an address written down here.
