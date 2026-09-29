@@ -18,13 +18,13 @@
 
 #include "../hook.h"
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 namespace {
 
 // ls::FileReader::FileReader(Path const&, type, unknown): zeroes the reader,
 // resolves the path to a file id (image+0x2704210) and loads it; 75 callers.
-constexpr std::uintptr_t kFileReaderCtor = 0x2704030;
 constexpr unsigned char kFileReaderCtorHead[] = {
     0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x10,
     0x89, 0xd5, 0x0f, 0x57, 0xc0, 0x48, 0xb8, 0x01, 0x01, 0x08, 0x00, 0x01};
@@ -69,7 +69,6 @@ std::string absolute(char const* path) {
 }
 
 // ls::FileReader::~FileReader, which closes and releases what it loaded.
-constexpr std::uintptr_t kFileReaderDtor = 0x27036f0;
 constexpr unsigned char kFileReaderDtorHead[] = {
     0x41, 0x56, 0x53, 0x50, 0x0f, 0x57, 0xc0, 0x48, 0x89, 0xfb,
     0x0f, 0x11, 0x47, 0x08, 0x4c, 0x8b, 0xb7, 0x88, 0x00, 0x00};
@@ -102,20 +101,20 @@ bool engine_read_file(char const* relative, std::string* out) {
 
 void install_path_override_hook() {
     unsigned char held[sizeof(kFileReaderCtorHead)] = {};
-    if (!safe_read((void const*)(load_bias() + kFileReaderCtor), held, sizeof(held))
+    if (!safe_read((void const*)(load_bias() + bg3le::target::FileReaderCtor()), held, sizeof(held))
         || std::memcmp(held, kFileReaderCtorHead, sizeof(held)) != 0) {
         logf("io: ls::FileReader's constructor is not at image+%#lx; path overrides stay unhonoured",
-             (unsigned long)kFileReaderCtor);
+             (unsigned long)bg3le::target::FileReaderCtor());
         return;
     }
     void* original = nullptr;
-    if (hook_call_sites(kFileReaderCtor, reinterpret_cast<void*>(&file_reader_ctor), &original, true) > 0) {
+    if (hook_call_sites(bg3le::target::FileReaderCtor(), reinterpret_cast<void*>(&file_reader_ctor), &original, true) > 0) {
         g_real = reinterpret_cast<CtorProc>(original);
     }
     unsigned char dtor[sizeof(kFileReaderDtorHead)] = {};
-    if (safe_read((void const*)(load_bias() + kFileReaderDtor), dtor, sizeof(dtor))
+    if (safe_read((void const*)(load_bias() + bg3le::target::FileReaderDtor()), dtor, sizeof(dtor))
         && std::memcmp(dtor, kFileReaderDtorHead, sizeof(dtor)) == 0) {
-        g_dtor = reinterpret_cast<void (*)(void*)>(load_bias() + kFileReaderDtor);
+        g_dtor = reinterpret_cast<void (*)(void*)>(load_bias() + bg3le::target::FileReaderDtor());
     }
 }
 

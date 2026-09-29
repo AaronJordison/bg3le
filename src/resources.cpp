@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "log.h"
+#include "targets.h"
 #include "mem.h"
 
 namespace bg3le {
@@ -17,7 +18,6 @@ namespace {
 
 // Where ls::gGlobalResourceManager sat in this build, relative to the
 // executable's first mapping. Tried first, and searched for if it disagrees.
-constexpr std::uintptr_t kRecordedGlobal = 0x7d473a8;
 
 // ResourceManager: 0x30 bytes, PreviewResources, then ResourceBanks[2].
 constexpr std::uintptr_t kResourceBanks = 0x50;
@@ -136,14 +136,14 @@ namespace {
 // The global that holds the manager: the recorded one if it agrees, else
 // whatever qword in the executable's data points at something that does.
 std::uintptr_t find_global() {
-    const std::uintptr_t recorded = image().From + kRecordedGlobal;
+    const std::uintptr_t recorded = image().From + bg3le::target::ResourcesGlobal();
     std::uintptr_t mgr = 0;
     if (image().From != 0 && peek(recorded, &mgr) && looks_like_manager(mgr)) return recorded;
 
     const std::uintptr_t at = bg3le_image_find_static(&looks_like_manager);
     if (at != 0) {
         logf("resources: ResourceManager global at image+%#lx (recorded +%#lx)",
-             (unsigned long)(at - image().From), (unsigned long)kRecordedGlobal);
+             (unsigned long)(at - image().From), (unsigned long)bg3le::target::ResourcesGlobal());
     }
     return at;
 }

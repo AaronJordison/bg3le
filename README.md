@@ -173,10 +173,36 @@ which is how that was attributed (14 modules with it, 69 without).
 [reference/MOD-LOADING.md](reference/MOD-LOADING.md) has the rest, including
 that a savegame's module list replaces the load order.
 
-Offsets are pinned to game version `4.8.400.7143220`. `tools/find_slots.py` and
-`tools/recover_symbols.py` regenerate them for a new build. The reference
-capture in `reference/` was taken against game `v4.73.98.727`, recorded in
-`reference/version.txt` so a later mismatch is attributable.
+### Surviving game updates
+
+Nothing is pinned to an address. Each engine function, global and vtable slot
+bg3le uses is described in `src/targets.cpp` by what it is, and found in
+whatever build is running (`src/resolve.h`):
+
+- **by symbol**, where the bundled libraries keep theirs (PhysX's
+  TempAllocator, for the fast allocator);
+- **by its bytes**, searched near where the last build had it and then across
+  `.text`, with call targets and rip-relative displacements wildcarded;
+- **through the code that uses it**: a global or a vtable by the instruction
+  that loads it, a function with identical copies by a unique call site, an
+  inlined instruction by the function it sits in.
+
+A target is only used when its match is unique; anything not found is logged
+(`resolve: X: no match -- leaving it off`) and its feature turns off rather
+than the game crashing. Results are cached per GNU build ID in
+`~/.cache/bg3le/`. Hotfix v4.76.31.656 moved nearly every function by 64-128
+bytes without changing it; bg3le found all 65 targets without a code change.
+
+When a patch does rewrite a target, `tools/make-sigs.py OLD_BG3 NEW_BG3
+name=kind:0xADDR...` takes the pattern from the old build, grows it until it
+is unique, and reports where it lands in the new one; the old build's binaries
+can be fetched with the Steam console (`steam -console`, then
+`download_depot 1086940 2330359 <manifest>`, the previous manifest ID being in
+`steamapps/depotcache`).
+
+The reference capture in `reference/` was taken against game `v4.73.98.727`,
+recorded in `reference/version.txt` so a later mismatch is attributable. Its
+523 struct layouts still match v4.76.31.656 (`Ext._Internal.SizeAudit()`).
 
 ## Contributing
 

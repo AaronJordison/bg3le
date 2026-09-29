@@ -28,6 +28,7 @@
 #include "savegame.h"
 #include "stats_sets.h"
 #include "log.h"
+#include "targets.h"
 #include "vendor/ls_string.h"
 #include "vendor/mods.h"
 
@@ -4189,9 +4190,9 @@ int l_imgui_status(lua_State* L) {
 // loaded beside it); its two CRITICAL_SECTIONs are 48 bytes here, as the
 // compiled layout has them.
 int l_input_manager(lua_State* L) {
-    constexpr std::uintptr_t kInputManager = 0x7d9d0a8;
     void* manager = nullptr;
-    if (!safe_read(reinterpret_cast<void*>(load_bias() + kInputManager),
+    if (bg3le::target::InputManager() == 0
+        || !safe_read(reinterpret_cast<void*>(load_bias() + bg3le::target::InputManager()),
                    &manager, sizeof(manager))
         || manager == nullptr) {
         return 0;

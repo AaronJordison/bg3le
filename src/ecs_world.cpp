@@ -38,17 +38,10 @@
 
 #include "hook.h"
 #include "log.h"
+#include "targets.h"
 
 namespace bg3le {
 namespace ecs {
-namespace {
-
-// EntityStorageContainer::GetEntityStorage(EntityHandle), from the
-// disassembly above. hook_call_sites verifies each site really calls it before
-// patching.
-constexpr std::uintptr_t kEntityStorageLookup = 0x218dc90;
-
-}  // namespace
 
 // Hidden, so the thunk can reach them with a PC-relative access. A default
 // visibility symbol in a shared object is preemptible, and the linker will not
@@ -102,14 +95,15 @@ __asm__(
 }  // namespace
 
 bool install_container_capture() {
+    // EntityStorageContainer::GetEntityStorage(EntityHandle), from the
+    // disassembly above; hook_call_sites verifies each site before patching.
+    const std::uintptr_t lookup = target::EntityStorageLookup();
     void* original = nullptr;
-    const std::size_t patched = hook_call_sites(
-        kEntityStorageLookup, reinterpret_cast<void*>(&bg3le_ecs_capture_thunk),
-        &original);
+    const std::size_t patched = lookup == 0 ? 0 : hook_call_sites(
+        lookup, reinterpret_cast<void*>(&bg3le_ecs_capture_thunk), &original);
     if (patched == 0) {
         logf("ecs: no call sites patched for the entity storage lookup at "
-             "%#lx; the container pointer will stay unknown",
-             (unsigned long)kEntityStorageLookup);
+             "%#lx; the container pointer will stay unknown", (unsigned long)lookup);
         return false;
     }
     bg3le_ecs_lookup_original = original;

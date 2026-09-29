@@ -20,6 +20,7 @@
 #include "debug_server.h"
 #include "hook.h"
 #include "log.h"
+#include "targets.h"
 #include "lua_host.h"
 
 extern "C" char const* bg3le_fixed_string(std::uint32_t index,
@@ -37,7 +38,6 @@ namespace bg3le {
 namespace {
 
 // esv::OsirisVariableHelper::SavegameVisit(helper, SavegameVisitor*, ?).
-constexpr std::uintptr_t kVariableHelperVisit = 0x4199990;
 constexpr unsigned char kVariableHelperPrologue[] = {
     0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x10,
     0x49, 0x89, 0xfe, 0x48, 0x8b, 0xbe, 0xb0, 0x00, 0x00, 0x00};
@@ -538,15 +538,15 @@ void install_savegame_hook() {
              "will not be saved");
         return;
     }
-    if (!bytes_match(kVariableHelperVisit, kVariableHelperPrologue,
+    if (!bytes_match(bg3le::target::VariableHelperVisit(), kVariableHelperPrologue,
                      sizeof(kVariableHelperPrologue))) {
         logf("savegame: OsirisVariableHelper::SavegameVisit not at %#lx; "
              "PersistentVars will not be saved",
-             (unsigned long)kVariableHelperVisit);
+             (unsigned long)bg3le::target::VariableHelperVisit());
         return;
     }
     void* original = nullptr;
-    if (hook_call_sites(kVariableHelperVisit,
+    if (hook_call_sites(bg3le::target::VariableHelperVisit(),
                         reinterpret_cast<void*>(&visit_hook), &original) == 0) {
         logf("savegame: no call sites patched; PersistentVars will not be saved");
         return;

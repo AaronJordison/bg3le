@@ -19,6 +19,7 @@
 #include <cstring>
 
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 #include "engine_containers.h"
 
@@ -64,29 +65,28 @@ static_assert(sizeof(Array<int>) == 16);
 
 // The global every Init reads first: RPGStats, whose Objects array buffer
 // is at +0xc8 -- the array bg3le found by content.
-constexpr std::uintptr_t kStatsGlobal = 0x7bbd418;
 constexpr std::size_t kStatsInHolder = 0xc8;
 
 struct InitFn {
     char const* Name;
-    std::uintptr_t Offset;
+    std::uintptr_t (*Offset)();  // targets.h
     unsigned char Bytes[36];
     std::size_t Length;
-    std::size_t StatsDisp;   // offset of a disp32 that loads kStatsGlobal, or 0
+    std::size_t StatsDisp;   // offset of a disp32 that loads bg3le::target::StatsGlobal(), or 0
 };
 
 const InitFn kSpellInit = {
-    "eoc::SpellPrototype::Init", 0x5e35980,
+    "eoc::SpellPrototype::Init", &bg3le::target::SpellPrototypeInit,
     {0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
      0x48, 0x81, 0xec, 0xe8, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x1d},
     20, 20};
 const InitFn kStatusInit = {
-    "eoc::StatusPrototype::Init", 0x27e4d90,
+    "eoc::StatusPrototype::Init", &bg3le::target::StatusPrototypeInit,
     {0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
      0x48, 0x83, 0xec, 0x38, 0x4c, 0x8b, 0x2d},
     17, 17};
 const InitFn kInterruptInit = {
-    "eoc::InterruptPrototype::Init", 0x2fc33d0,
+    "eoc::InterruptPrototype::Init", &bg3le::target::InterruptPrototypeInit,
     {0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
      0x48, 0x83, 0xec, 0x18, 0x8b, 0x07, 0x8b, 0x6e, 0x20, 0x49,
      0x89, 0xf6, 0x48, 0x89, 0xfb, 0x39, 0xe8},
@@ -95,7 +95,7 @@ const InitFn kInterruptInit = {
 // The passive loader, which builds every passive missing from the manager's
 // map inline; there is no PassivePrototype::Init on this build.
 const InitFn kPassiveLoader = {
-    "the passive loader", 0x2fc1b00,
+    "the passive loader", &bg3le::target::PassiveLoader,
     {0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
      0x48, 0x81, 0xec, 0xb8, 0x00, 0x00, 0x00, 0x80, 0x7f, 0x18,
      0x00, 0x48, 0x89, 0xfb, 0x0f, 0x85, 0x1a, 0x14, 0x00, 0x00,
@@ -105,32 +105,32 @@ const InitFn kPassiveLoader = {
 // The status loader's boost parse, which upstream calls ParseStaticBoosts:
 // the parser, then the three functions of the callback it is handed.
 const InitFn kBoostParse = {
-    "the static boost parser", 0x30317a0,
+    "the static boost parser", &bg3le::target::BoostParse,
     {0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
      0x48, 0x83, 0xec, 0x58, 0x85, 0xf6, 0x74, 0x2d},
     18, 0};
 const InitFn kBoostInvoke = {
-    "the boost parse callback", 0x5e762a0,
+    "the boost parse callback", &bg3le::target::BoostInvoke,
     {0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
      0x48, 0x83, 0xec, 0x68, 0x48, 0x89, 0xfb, 0x48, 0x8b, 0x7f, 0x18},
     21, 0};
 const InitFn kBoostCopy = {
-    "the boost parse callback's copy", 0x5e765f0,
+    "the boost parse callback's copy", &bg3le::target::BoostCopy,
     {0x0f, 0x10, 0x46, 0x18, 0x48, 0x89, 0xd0, 0x0f, 0x11, 0x42, 0x18},
     11, 0};
 const InitFn kBoostManage = {
-    "the boost parse callback's manager", 0x5e76610,
+    "the boost parse callback's manager", &bg3le::target::BoostManage,
     {0x48, 0x89, 0xd0, 0x48, 0x85, 0xd2, 0x75, 0x01, 0xc3},
     9, 0};
 
 // The function's address if it is the one this build was read from.
 void* verified(InitFn const& fn) {
     const std::uintptr_t bias = load_bias();
-    auto const* code = reinterpret_cast<unsigned char const*>(bias + fn.Offset);
+    auto const* code = reinterpret_cast<unsigned char const*>(bias + fn.Offset());
     unsigned char held[sizeof(fn.Bytes)] = {};
     if (!safe_read(code, held, fn.Length) || std::memcmp(held, fn.Bytes, fn.Length) != 0) {
         logf("stat sync: %s is not at image+%#lx on this build", fn.Name,
-             (unsigned long)fn.Offset);
+             (unsigned long)fn.Offset());
         return nullptr;
     }
     if (fn.StatsDisp != 0) {
@@ -139,8 +139,8 @@ void* verified(InitFn const& fn) {
         void* stats = nullptr;
         const std::uintptr_t next = (std::uintptr_t)code + fn.StatsDisp + 4;
         if (!safe_read(code + fn.StatsDisp, &disp, sizeof(disp))
-            || next + disp != bias + kStatsGlobal
-            || !safe_read((void const*)(bias + kStatsGlobal), &holder, sizeof(holder))
+            || next + disp != bias + bg3le::target::StatsGlobal()
+            || !safe_read((void const*)(bias + bg3le::target::StatsGlobal()), &holder, sizeof(holder))
             || holder == nullptr
             || !safe_read(holder + kStatsInHolder, &stats, sizeof(stats))
             || stats == nullptr || stats != bg3le_stats_manager()) {
@@ -309,7 +309,8 @@ extern "C" void* bg3le_rpgstats() {
     const std::uintptr_t bias = bg3le::load_bias();
     char* rpg = nullptr;
     void* objects = nullptr;
-    if (!bg3le::safe_read((void const*)(bias + bg3le::kStatsGlobal), &rpg, sizeof(rpg))
+    if (bg3le::target::StatsGlobal() == 0
+        || !bg3le::safe_read((void const*)(bias + bg3le::target::StatsGlobal()), &rpg, sizeof(rpg))
         || rpg == nullptr
         || !bg3le::safe_read(rpg + bg3le::kStatsInHolder, &objects, sizeof(objects))
         || objects == nullptr || objects != bg3le_stats_manager()) {

@@ -22,6 +22,7 @@
 #include "engine_containers.h"
 #include "../hook.h"
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 extern "C" void* bg3le_server_level_manager();
@@ -116,11 +117,11 @@ namespace {
 
 // ecl::LevelManager's global, found beside the GlobalTemplateManager in the
 // client's template lookups, and checked by its level pointing back at it.
-constexpr std::uintptr_t kRecordedClientLevelManager = 0x7bfb820;
 
 void* client_level_manager() {
     void* mgr = nullptr;
-    auto const* slot = (void const*)(bg3le::load_bias() + kRecordedClientLevelManager);
+    if (bg3le::target::ClientLevelManager() == 0) return nullptr;
+    auto const* slot = (void const*)(bg3le::load_bias() + bg3le::target::ClientLevelManager());
     if (!bg3le::safe_read(slot, &mgr, sizeof(mgr)) || !has_vtable(mgr)) return nullptr;
     auto* m = static_cast<bg3se::LevelManager*>(mgr);
     bg3se::EoCLevel* level = nullptr;
@@ -559,7 +560,6 @@ extern "C" std::size_t bg3le_ai_paths_active(bool client, void** out, std::size_
 // unmarking the path's ignored and moved entities. Checked by its opening,
 // which copies TargetAdjusted into TargetPosition.
 namespace {
-constexpr std::uintptr_t kPathSearch = 0x2646b30;
 constexpr unsigned char kPathSearchHead[] = {
     0x8b, 0x86, 0x84, 0x00, 0x00, 0x00, 0x89, 0x86, 0x50, 0x01, 0x00, 0x00,
     0x48, 0x8b, 0x46, 0x7c, 0x48, 0x89, 0x86, 0x48, 0x01, 0x00, 0x00};
@@ -570,7 +570,6 @@ using PathSearchProc = bool (*)(bg3se::AiGrid*, bg3se::AiPath*);
 // list is not empty, it marks the head path's moved and ignored entities on
 // the grid, searches, unmarks them, and pops the path once the search is
 // done. The only caller of the search above.
-constexpr std::uintptr_t kPathStep = 0x2c69970;
 constexpr unsigned char kPathStepHead[] = {
     0xc7, 0x87, 0xbc, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x83, 0xbf, 0x0c, 0x01, 0x00, 0x00, 0x00};
@@ -585,7 +584,7 @@ extern "C" int bg3le_ai_path_search(bool client, void* at, char const** why) {
     static int usable = -1;
     if (usable < 0) {
         unsigned char held[sizeof(kPathSearchHead)] = {};
-        usable = bg3le::safe_read((void const*)(bg3le::load_bias() + kPathSearch + kPathSearchHeadAt),
+        usable = bg3le::safe_read((void const*)(bg3le::load_bias() + bg3le::target::PathSearch() + kPathSearchHeadAt),
                                   held, sizeof(held))
                  && std::memcmp(held, kPathSearchHead, sizeof(held)) == 0;
         if (!usable) bg3le::logf("paths: the engine's path search is not where this build has it");
@@ -606,7 +605,7 @@ extern "C" int bg3le_ai_path_search(bool client, void* at, char const** why) {
     if (path->IgnoreEntities.size() != 0 || path->MovedEntities.size() != 0) {
         static const bool stepUsable = [] {
             unsigned char held[sizeof(kPathStepHead)] = {};
-            return bg3le::safe_read((void const*)(bg3le::load_bias() + kPathStep + kPathStepHeadAt),
+            return bg3le::safe_read((void const*)(bg3le::load_bias() + bg3le::target::PathStep() + kPathStepHeadAt),
                                     held, sizeof(held))
                    && std::memcmp(held, kPathStepHead, sizeof(held)) == 0;
         }();
@@ -620,12 +619,12 @@ extern "C" int bg3le_ai_path_search(bool client, void* at, char const** why) {
         std::memcpy(&saved, &grid->Paths, sizeof(saved));
         list = {one, 1, 1};
         std::memcpy((void*)&grid->Paths, &list, sizeof(list));
-        auto step = reinterpret_cast<PathStepProc>(bg3le::load_bias() + kPathStep);
+        auto step = reinterpret_cast<PathStepProc>(bg3le::load_bias() + bg3le::target::PathStep());
         for (int i = 0; i < 64 && grid->Paths.size() != 0; ++i) step(grid);
         std::memcpy((void*)&grid->Paths, &saved, sizeof(saved));
         return path->GoalFound ? 1 : 0;
     }
-    reinterpret_cast<PathSearchProc>(bg3le::load_bias() + kPathSearch)(grid, path);
+    reinterpret_cast<PathSearchProc>(bg3le::load_bias() + bg3le::target::PathSearch())(grid, path);
     return path->GoalFound ? 1 : 0;
 }
 
@@ -638,10 +637,6 @@ extern "C" int bg3le_ai_path_search(bool client, void* at, char const** why) {
 
 namespace {
 
-constexpr std::uintptr_t kSurfaceActionFactory = 0x7ca5eb0;
-constexpr std::uintptr_t kCreateAction = 0x38a5fd0;
-constexpr std::uintptr_t kAddAction = 0x2cc5b20;
-constexpr std::uintptr_t kTransformInit = 0x2682850;
 
 // The create takes a story action id and the ClassDescription bank, which
 // it stores at +0x10 and +0x50 (upstream sets the latter afterwards), then
@@ -672,9 +667,9 @@ bool code_is(std::uintptr_t at, unsigned char const (&head)[N]) {
 bool surface_code_checks_out() {
     static int usable = -1;
     if (usable < 0) {
-        usable = code_is(kCreateAction + 0xb, kCreateActionHead)
-                 && code_is(kAddAction + 4, kAddActionHead)
-                 && code_is(kTransformInit + 5, kTransformInitHead);
+        usable = code_is(bg3le::target::CreateAction() + 0xb, kCreateActionHead)
+                 && code_is(bg3le::target::AddAction() + 4, kAddActionHead)
+                 && code_is(bg3le::target::TransformInit() + 5, kTransformInitHead);
         if (!usable) bg3le::logf("surfaces: the engine's surface action code is not where this build has it");
     }
     return usable != 0;
@@ -697,12 +692,13 @@ extern "C" void* bg3le_surface_action_create(int type, void* classDescriptions, 
     }
     if (server_level() == nullptr) return nullptr;
     void* factory = nullptr;
-    auto const* slot = (void const*)(bg3le::load_bias() + kSurfaceActionFactory);
-    if (!bg3le::safe_read(slot, &factory, sizeof(factory)) || !has_vtable(factory)) {
+    auto const* slot = (void const*)(bg3le::load_bias() + bg3le::target::SurfaceActionFactory());
+    if (bg3le::target::SurfaceActionFactory() == 0
+        || !bg3le::safe_read(slot, &factory, sizeof(factory)) || !has_vtable(factory)) {
         *why = "the surface action factory is not up";
         return nullptr;
     }
-    auto create = reinterpret_cast<CreateActionProc>(bg3le::load_bias() + kCreateAction);
+    auto create = reinterpret_cast<CreateActionProc>(bg3le::load_bias() + bg3le::target::CreateAction());
     return create(factory, type, 0, classDescriptions, kNullHandle);
 }
 
@@ -721,9 +717,9 @@ extern "C" bool bg3le_surface_action_execute(void* at, char const** why) {
     }
     if (action->GetTypeId() == bg3se::SurfaceActionType::TransformSurface) {
         auto* t = static_cast<bg3se::esv::TransformSurfaceAction*>(action);
-        reinterpret_cast<TransformInitProc>(bg3le::load_bias() + kTransformInit)(
+        reinterpret_cast<TransformInitProc>(bg3le::load_bias() + bg3le::target::TransformInit())(
             t, (int)t->SurfaceTransformAction, (int)t->SurfaceLayer, (int)t->OriginSurface);
     }
-    reinterpret_cast<AddActionProc>(bg3le::load_bias() + kAddAction)(level->SurfaceManager, action);
+    reinterpret_cast<AddActionProc>(bg3le::load_bias() + bg3le::target::AddAction())(level->SurfaceManager, action);
     return true;
 }

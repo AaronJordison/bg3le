@@ -63,4 +63,7 @@ std::uintptr_t load_bias();
 // True when the range lies inside the main object's .text.
 bool in_text(std::uintptr_t offset, std::size_t len);
 
+// The main object's executable segment, as a link-time offset and a size.
+bool text_range(std::uintptr_t* offset, std::size_t* size);
+
 }  // namespace bg3le

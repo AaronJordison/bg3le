@@ -30,6 +30,7 @@
 #include "engine_containers.h"
 
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 extern "C" bool bg3le_fixed_string_hash(std::uint32_t id, std::uint32_t* out);
@@ -71,7 +72,6 @@ std::mutex& templates_lock() {
 // Where ls::GlobalTemplateManager sat in this build, relative to the
 // executable's first mapping; and within it, Banks[2] at +0x20. A bank is
 // { VMT, LegacyMap<FixedString, GameObjectTemplate*> Templates, ... }.
-constexpr std::uintptr_t kRecordedManagerGlobal = 0x7d203f8;
 constexpr std::uintptr_t kManagerBanks = 0x20;
 constexpr std::uintptr_t kBankHashSize = 0x08;
 constexpr std::uintptr_t kBankTable = 0x10;
@@ -204,7 +204,7 @@ std::uint64_t manager_static(unsigned long long imageFrom) {
     static std::uint64_t found = 0;
     static bool searched = false;
     std::uint64_t mgr = 0;
-    const std::uint64_t recorded = imageFrom + kRecordedManagerGlobal;
+    const std::uint64_t recorded = imageFrom + bg3le::target::TemplatesManager();
     if (found == 0 && read_as((void const*)recorded, &mgr) && looks_like_manager(mgr)) {
         found = recorded;
     }
@@ -213,7 +213,7 @@ std::uint64_t manager_static(unsigned long long imageFrom) {
     found = bg3le_image_find_static(&looks_like_manager);
     if (found != 0) {
         logf("templates: GlobalTemplateManager static at image+%#lx (recorded +%#lx)",
-             (unsigned long)(found - imageFrom), (unsigned long)kRecordedManagerGlobal);
+             (unsigned long)(found - imageFrom), (unsigned long)bg3le::target::TemplatesManager());
     }
     return found;
 }
@@ -287,7 +287,7 @@ bool build_from_manager(Templates* out) {
     }
     if (out->ById.size() < 100 || disagreed > out->ById.size() / 100) {
         logf("templates: the manager at image+%#lx did not check out (%zu read, %zu disagreed)",
-             (unsigned long)kRecordedManagerGlobal, out->ById.size(), disagreed);
+             (unsigned long)bg3le::target::TemplatesManager(), out->ById.size(), disagreed);
         *out = Templates{};
         return false;
     }
@@ -320,8 +320,6 @@ Found const* lookup(char const* id) {
 
 // ---- the server's local and cache managers ----
 
-constexpr std::uintptr_t kRecordedCacheGlobal = 0x7c8d978;
-constexpr std::uintptr_t kRecordedLevelManagerGlobal = 0x7c9f7b0;
 
 // TemplateManagerType, which the engine's resolver switches on.
 constexpr std::uint8_t kCacheType = 3;
@@ -379,7 +377,7 @@ std::uintptr_t held_by(std::uintptr_t recorded, bool (*accept)(std::uintptr_t),
         return obj;
     }
     static bool searched[2] = {};
-    bool& done = searched[recorded == kRecordedCacheGlobal ? 0 : 1];
+    bool& done = searched[recorded == bg3le::target::TemplatesCache() ? 0 : 1];
     if (obj != 0 || done || *cached != 0) return 0;
     done = true;
     at = bg3le_image_find_static(accept);
@@ -392,13 +390,13 @@ std::uintptr_t held_by(std::uintptr_t recorded, bool (*accept)(std::uintptr_t),
 
 std::uintptr_t cache_manager() {
     static std::uintptr_t at = 0;
-    return held_by(kRecordedCacheGlobal, &looks_like_cache_global, &at, "CacheTemplateManager");
+    return held_by(bg3le::target::TemplatesCache(), &looks_like_cache_global, &at, "CacheTemplateManager");
 }
 
 std::uintptr_t current_level() {
     static std::uintptr_t at = 0;
     const std::uintptr_t mgr =
-        held_by(kRecordedLevelManagerGlobal, &looks_like_level_manager, &at, "LevelManager");
+        held_by(bg3le::target::LevelManager(), &looks_like_level_manager, &at, "LevelManager");
     std::uint64_t level = 0;
     return mgr != 0 && read_as((void const*)(mgr + kCurrentLevel), &level) ? level : 0;
 }
@@ -560,7 +558,7 @@ extern "C" char const* bg3le_templates_type(char const* id) {
 // The server's esv::LevelManager, checked by content, or null.
 extern "C" void* bg3le_server_level_manager() {
     static std::uintptr_t at = 0;
-    return (void*)held_by(kRecordedLevelManagerGlobal, &looks_like_level_manager, &at,
+    return (void*)held_by(bg3le::target::LevelManager(), &looks_like_level_manager, &at,
                           "LevelManager");
 }
 

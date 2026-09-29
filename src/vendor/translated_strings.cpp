@@ -30,6 +30,7 @@
 
 #include "../hook.h"
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 extern "C" bool bg3le_game_allocator_ready();
@@ -49,15 +50,12 @@ namespace bg3le {
 namespace {
 
 // ls::gTranslatedStringRepository.
-constexpr std::uintptr_t kRepositoryGlobal = 0x7d9d258;
 
 // ls::FixedString::CreateFromString(LSStringView const&), found through
 // upstream's anchor string; checked by its prologue and its hash seed.
-constexpr std::uintptr_t kFixedStringCreate = 0x226db50;
 constexpr unsigned char kFixedStringCreatePrologue[] = {
     0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
     0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00};
-constexpr std::uintptr_t kFixedStringCreateSeedAt = 0x226dbbc;
 constexpr unsigned char kFixedStringCreateSeed[] = {0x41, 0xba, 0xed, 0x5e,
                                                     0xad, 0xde};
 
@@ -230,7 +228,8 @@ bool lookup(void* repo, std::uint32_t id, std::uint32_t hash, View* out) {
 void* repository() {
     static std::atomic<void*> verified{nullptr};
     void* repo = nullptr;
-    auto* global = reinterpret_cast<void* const*>(load_bias() + kRepositoryGlobal);
+    if (bg3le::target::TranslatedStringRepository() == 0) return nullptr;
+    auto* global = reinterpret_cast<void* const*>(load_bias() + bg3le::target::TranslatedStringRepository());
     if (!safe_read(global, &repo, sizeof(repo)) || repo == nullptr) return nullptr;
 
     // The engine replaces it when it reloads localisation -- returning to
@@ -265,7 +264,7 @@ void* repository() {
             warned = true;
             logf("loca: the repository at image+%#lx does not resolve the "
                  "copyright line; Ext.Loca stays on bg3le's own index",
-                 (unsigned long)kRepositoryGlobal);
+                 (unsigned long)bg3le::target::TranslatedStringRepository());
         }
         return nullptr;
     }
@@ -277,15 +276,15 @@ void* repository() {
 }  // namespace
 
 extern "C" bool bg3le_engine_strings_install() {
-    if (!bytes_match(kFixedStringCreate, kFixedStringCreatePrologue,
+    if (!bytes_match(bg3le::target::FixedStringCreate(), kFixedStringCreatePrologue,
                      sizeof(kFixedStringCreatePrologue))
-        || !bytes_match(kFixedStringCreateSeedAt, kFixedStringCreateSeed,
+        || !bytes_match(bg3le::target::FixedStringCreateSeedAt(), kFixedStringCreateSeed,
                         sizeof(kFixedStringCreateSeed))) {
         logf("strings: FixedString::CreateFromString not at %#lx",
-             (unsigned long)kFixedStringCreate);
+             (unsigned long)bg3le::target::FixedStringCreate());
         return false;
     }
-    g_create = reinterpret_cast<CreateProc>(load_bias() + kFixedStringCreate);
+    g_create = reinterpret_cast<CreateProc>(load_bias() + bg3le::target::FixedStringCreate());
     return true;
 }
 

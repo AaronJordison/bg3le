@@ -27,6 +27,7 @@
 #include "engine_containers.h"
 #include "../hook.h"
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 extern "C" void* bg3le_rpgstats();
@@ -37,10 +38,6 @@ namespace {
 using namespace bg3se;
 using namespace bg3se::stats;
 
-constexpr std::uintptr_t kSplitGroups = 0x2fddd40;
-constexpr std::uintptr_t kMakeSet = 0x2fd0700;
-constexpr std::uintptr_t kParseFunctor = 0x2b87470;
-constexpr std::uintptr_t kParserContext = 0x7ce43e8;
 constexpr int kFunctorsInsertSlot = 3;
 
 constexpr unsigned char kSplitGroupsHead[] = {
@@ -127,15 +124,15 @@ extern "C" bool bg3le_stats_set_functors(void* object, char const* attribute, ch
                                          char const** why) {
     static int usable = -1;
     if (usable < 0) {
-        usable = code_is(kSplitGroups, kSplitGroupsHead) && code_is(kMakeSet, kMakeSetHead)
-                 && code_is(kParseFunctor, kParseFunctorHead);
+        usable = code_is(bg3le::target::SplitGroups(), kSplitGroupsHead) && code_is(bg3le::target::MakeSet(), kMakeSetHead)
+                 && code_is(bg3le::target::ParseFunctor(), kParseFunctorHead);
         if (!usable) bg3le::logf("stats: the engine's functor parsing is not where this build has it");
     }
     auto* stats = static_cast<RPGStats*>(bg3le_rpgstats());
     auto* obj = static_cast<Object*>(object);
     void* ctx = nullptr;
-    if (!usable || stats == nullptr || obj == nullptr
-        || !bg3le::safe_read((void const*)(bg3le::load_bias() + kParserContext), &ctx, sizeof(ctx))
+    if (!usable || stats == nullptr || obj == nullptr || bg3le::target::ParserContext() == 0
+        || !bg3le::safe_read((void const*)(bg3le::load_bias() + bg3le::target::ParserContext()), &ctx, sizeof(ctx))
         || ctx == nullptr) {
         *why = "the engine's functor parsing is not available";
         return false;
@@ -152,10 +149,10 @@ extern "C" bool bg3le_stats_set_functors(void* object, char const* attribute, ch
     // The engine allocates into these; they are left, not freed.
     alignas(HashMap<FixedString, STDString>) unsigned char groupsRaw[sizeof(HashMap<FixedString, STDString>)] = {};
     auto* groups = new (groupsRaw) HashMap<FixedString, STDString>();
-    reinterpret_cast<SplitProc>(bg3le::load_bias() + kSplitGroups)(groups, &text, ctx);
+    reinterpret_cast<SplitProc>(bg3le::load_bias() + bg3le::target::SplitGroups())(groups, &text, ctx);
 
-    auto makeSet = reinterpret_cast<MakeSetProc>(bg3le::load_bias() + kMakeSet);
-    auto parse = reinterpret_cast<ParseProc>(bg3le::load_bias() + kParseFunctor);
+    auto makeSet = reinterpret_cast<MakeSetProc>(bg3le::load_bias() + bg3le::target::MakeSet());
+    auto parse = reinterpret_cast<ParseProc>(bg3le::load_bias() + bg3le::target::ParseFunctor());
     alignas(Array<FunctorGroup>) unsigned char resultRaw[sizeof(Array<FunctorGroup>)] = {};
     auto* result = new (resultRaw) Array<FunctorGroup>();
     std::uint32_t index = 0;
@@ -197,10 +194,10 @@ extern "C" bool bg3le_stats_split_groups(char const* value,
                                          void (*each)(void* user, char const* key,
                                                       char const* text, std::size_t size),
                                          void* user) {
-    static const bool usable = code_is(kSplitGroups, kSplitGroupsHead);
+    static const bool usable = code_is(bg3le::target::SplitGroups(), kSplitGroupsHead);
     void* ctx = nullptr;
-    if (!usable || !bg3le_game_allocator_ready()
-        || !bg3le::safe_read((void const*)(bg3le::load_bias() + kParserContext), &ctx, sizeof(ctx))
+    if (!usable || !bg3le_game_allocator_ready() || bg3le::target::ParserContext() == 0
+        || !bg3le::safe_read((void const*)(bg3le::load_bias() + bg3le::target::ParserContext()), &ctx, sizeof(ctx))
         || ctx == nullptr) {
         return false;
     }
@@ -208,7 +205,7 @@ extern "C" bool bg3le_stats_split_groups(char const* value,
     // The engine allocates into this; it is left, not freed.
     alignas(HashMap<FixedString, STDString>) unsigned char groupsRaw[sizeof(HashMap<FixedString, STDString>)] = {};
     auto* groups = new (groupsRaw) HashMap<FixedString, STDString>();
-    reinterpret_cast<SplitProc>(bg3le::load_bias() + kSplitGroups)(groups, &text, ctx);
+    reinterpret_cast<SplitProc>(bg3le::load_bias() + bg3le::target::SplitGroups())(groups, &text, ctx);
     for (auto it = groups->begin(); it != groups->end(); ++it) {
         STDString const& group = it.Value();
         each(user, it.Key().GetString(), group.data(), group.size());

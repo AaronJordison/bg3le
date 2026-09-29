@@ -103,6 +103,7 @@ std::uintptr_t load_bias() {
 
 std::size_t hook_call_sites(std::uintptr_t func_offset, void* replacement,
                             void** original, bool tail_jumps) {
+    if (func_offset == 0) return 0;  // an unresolved target
     const std::uintptr_t bias = load_bias();
     const std::uintptr_t target = bias + func_offset;
     if (original != nullptr) *original = reinterpret_cast<void*>(target);
@@ -151,6 +152,10 @@ std::size_t hook_call_sites(std::uintptr_t func_offset, void* replacement,
 
 bool hook_slot(std::uintptr_t slot_offset, std::uintptr_t expected_offset,
                void* replacement, void** original) {
+    if (slot_offset == 0 || expected_offset == 0) {
+        logf("hook: slot or its expected target unresolved -- refusing to patch");
+        return false;
+    }
     const std::uintptr_t bias = load_bias();
     auto* slot = reinterpret_cast<void**>(bias + slot_offset);
     void* expected = reinterpret_cast<void*>(bias + expected_offset);
@@ -195,6 +200,15 @@ bool in_text(std::uintptr_t offset, std::size_t len) {
     return offset >= addr && offset + len <= addr + size;
 }
 
+bool text_range(std::uintptr_t* offset, std::size_t* size) {
+    Elf64_Addr addr = 0;
+    std::size_t len = 0;
+    if (!find_text(&addr, &len)) return false;
+    *offset = addr;
+    *size = len;
+    return true;
+}
+
 bool patch_bytes(std::uintptr_t offset, const unsigned char* expected,
                  const unsigned char* patch, std::size_t len) {
     return patch_bytes(offset, expected, len, patch, len);
@@ -203,6 +217,7 @@ bool patch_bytes(std::uintptr_t offset, const unsigned char* expected,
 bool patch_bytes(std::uintptr_t offset, const unsigned char* expected,
                  std::size_t expected_len, const unsigned char* patch,
                  std::size_t patch_len) {
+    if (offset == 0) return false;  // an unresolved target
     if (!in_text(offset, expected_len)) {
         logf("hook: %#lx is outside the main object's .text -- not bg3?",
              (unsigned long)offset);

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 namespace bg3le {
@@ -46,9 +47,7 @@ static_assert(offsetof(EngineNode, Key) == offsetof(Node, Key));
 static_assert(offsetof(EngineNode, Value) == offsetof(Node, Value));
 static_assert(sizeof(EngineNode) == sizeof(Node));
 
-constexpr std::uintptr_t kManagerGlobal = 0x7d9d238;
 // `mov rsi, [rip+disp]` loading it, in the "OnMap" function.
-constexpr std::uintptr_t kManagerLoad = 0x2f9baf2;
 constexpr unsigned char kManagerLoadBytes[] = {0x48, 0x8b, 0x35};
 
 constexpr std::uint32_t kNull = 0xffffffffu;
@@ -65,16 +64,16 @@ static_assert(offsetof(Manager, Keys) == 0x18);
 KeysMap* keys() {
     const std::uintptr_t bias = load_bias();
     unsigned char code[7] = {};
-    if (!safe_read((void const*)(bias + kManagerLoad), code, sizeof(code))
+    if (!safe_read((void const*)(bias + bg3le::target::StringKeysManagerLoad()), code, sizeof(code))
         || std::memcmp(code, kManagerLoadBytes, sizeof(kManagerLoadBytes)) != 0) {
         return nullptr;
     }
     std::int32_t disp = 0;
     std::memcpy(&disp, code + 3, sizeof(disp));
-    if (kManagerLoad + sizeof(code) + disp != kManagerGlobal) return nullptr;
+    if (bg3le::target::StringKeysManagerLoad() + sizeof(code) + disp != bg3le::target::StringKeysManager()) return nullptr;
 
     Manager* manager = nullptr;
-    if (!safe_read((void const*)(bias + kManagerGlobal), &manager, sizeof(manager))
+    if (!safe_read((void const*)(bias + bg3le::target::StringKeysManager()), &manager, sizeof(manager))
         || manager == nullptr) {
         return nullptr;
     }

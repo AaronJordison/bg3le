@@ -13,6 +13,7 @@
 #include <cstdint>
 
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 namespace bg3le {
@@ -25,7 +26,6 @@ namespace {
 using NetMap = bg3se::HashMap<bg3se::EntityHandle, bg3se::NetId>;
 using EntityMap = bg3se::HashMap<bg3se::NetId, bg3se::EntityHandle>;
 
-constexpr std::uintptr_t kEoCClient = 0x7b75b50;
 
 std::atomic<void*> g_game_server{nullptr};
 
@@ -79,7 +79,7 @@ NetMap const* client_map(bg3se::ecs::EntityWorld* world) {
     static void* cachedWorld = nullptr;
     if (cached != nullptr && cachedWorld == world) return cached;
     char* eoc = nullptr;
-    if (world == nullptr || !bg3le::safe_read((void const*)(bg3le::load_bias() + kEoCClient), &eoc, sizeof(eoc))
+    if (world == nullptr || bg3le::target::EoCClient() == 0 || !bg3le::safe_read((void const*)(bg3le::load_bias() + bg3le::target::EoCClient()), &eoc, sizeof(eoc))
         || eoc == nullptr) {
         return nullptr;
     }

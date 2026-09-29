@@ -10,15 +10,15 @@
 
 #include "debug_server.h"
 #include "hook.h"
+#include "resolve.h"
 #include "log.h"
 
 namespace bg3le {
 namespace {
 
-// physx::shdfnd::TempAllocator::allocate(unsigned long, char const*, int)
-constexpr std::uintptr_t kTempAlloc = 0x5666b30;
-// physx::shdfnd::TempAllocator::deallocate(void*)
-constexpr std::uintptr_t kTempFree = 0x5666c90;
+// PhysX keeps its symbols, so these survive the engine moving around them.
+constexpr const char* kTempAlloc = "_ZN5physx6shdfnd13TempAllocator8allocateEmPKci";
+constexpr const char* kTempFree = "_ZN5physx6shdfnd13TempAllocator10deallocateEPv";
 
 using AllocProc = void* (*)(void*, unsigned long, const char*, int);
 using FreeProc = void (*)(void*, void*);
@@ -154,8 +154,14 @@ void fast_alloc_install() {
 
     // Free first: its hook passes foreign blocks on, so it is safe alone. An
     // allocate hook without it hands the engine blocks it cannot free.
+    const std::uintptr_t temp_free = resolve_symbol(kTempFree);
+    const std::uintptr_t temp_alloc = resolve_symbol(kTempAlloc);
+    if (temp_free == 0 || temp_alloc == 0) {
+        statusf("fast alloc: NOT active (PhysX TempAllocator symbols missing)");
+        return;
+    }
     void* original = nullptr;
-    const std::size_t f = hook_call_sites(kTempFree,
+    const std::size_t f = hook_call_sites(temp_free,
                                           reinterpret_cast<void*>(&free_hook),
                                           &original);
     if (f > 0) g_real_free = reinterpret_cast<FreeProc>(original);
@@ -164,7 +170,7 @@ void fast_alloc_install() {
         return;
     }
 
-    const std::size_t a = hook_call_sites(kTempAlloc,
+    const std::size_t a = hook_call_sites(temp_alloc,
                                           reinterpret_cast<void*>(&alloc_hook),
                                           &original);
     if (a > 0) g_real_alloc = reinterpret_cast<AllocProc>(original);

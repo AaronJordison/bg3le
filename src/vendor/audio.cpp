@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 extern "C" void* bg3le_ls_resource_manager();
@@ -26,9 +27,6 @@ std::uintptr_t load_bias();
 
 namespace {
 
-constexpr std::uintptr_t kWwiseVtable = 0x7a04ac0;
-constexpr std::uintptr_t kSetSwitch = 0x28a0b40;
-constexpr std::uintptr_t kSetState = 0x3dae190;
 
 enum Slot : int {
     SetSwitch = 20,
@@ -75,10 +73,10 @@ void* manager() {
     if (rm == 0) return nullptr;
     const std::uintptr_t bias = bg3le::load_bias();
     auto matches = [&](std::uintptr_t p) {
-        if (p < 0x10000 || read<std::uintptr_t>(p) != bias + kWwiseVtable) return false;
-        const auto vt = bias + kWwiseVtable;
-        return read<std::uintptr_t>(vt + SetSwitch * 8) == bias + kSetSwitch
-               && read<std::uintptr_t>(vt + SetState * 8) == bias + kSetState;
+        if (p < 0x10000 || read<std::uintptr_t>(p) != bias + bg3le::target::WwiseVtable()) return false;
+        const auto vt = bias + bg3le::target::WwiseVtable();
+        return read<std::uintptr_t>(vt + SetSwitch * 8) == bias + bg3le::target::WwiseSetSwitch()
+               && read<std::uintptr_t>(vt + SetState * 8) == bias + bg3le::target::WwiseSetState();
     };
     if (offset != 0) {
         auto p = read<std::uintptr_t>(rm + offset);

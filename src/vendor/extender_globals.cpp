@@ -48,6 +48,7 @@
 
 #include "../hook.h"
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 #include <cstring>
 
@@ -55,24 +56,30 @@ extern "C" bool bg3le_settings_flag(char const* key, bool fallback);
 
 // ls::ThreadRegistry::RequestThreadIndex, which this build inlines: the
 // index lives in a thread-local int at fs:-0x24d28, as the FixedString
-// lookup at image+0x2b82497 reads it (checked before use), and an engine
+// lookup at target::ThreadIndexRead reads it (checked before use), and an engine
 // thread has one by the time it runs Lua. -1 for a thread without one; the
 // engine's own registration also installs a thread-exit hook, so bg3le does
 // not register threads itself.
 extern "C" int bg3le_engine_thread_index() {
+    // The thread-local slot's offset is read out of the engine's own load
+    // (mov r14d, fs:disp32), since it moves when the TLS layout does.
+    static std::int32_t tls = 0;
     static int usable = -1;
     if (usable < 0) {
-        constexpr unsigned char kRead[] = {0x64, 0x44, 0x8b, 0x34, 0x25, 0xd8, 0xb2, 0xfd, 0xff};
-        unsigned char held[sizeof(kRead)] = {};
-        usable = bg3le::safe_read((void const*)(bg3le::load_bias() + 0x2b82497), held, sizeof(held))
+        constexpr unsigned char kRead[] = {0x64, 0x44, 0x8b, 0x34, 0x25};
+        unsigned char held[sizeof(kRead) + 4] = {};
+        const std::uintptr_t at = bg3le::target::ThreadIndexRead();
+        usable = at != 0 && bg3le::safe_read((void const*)(bg3le::load_bias() + at), held, sizeof(held))
                      && std::memcmp(held, kRead, sizeof(kRead)) == 0;
+        if (usable) std::memcpy(&tls, held + sizeof(kRead), sizeof(tls));
+        usable = usable && tls < 0;
         if (!usable) bg3le::logf("threads: the thread-index read is not where this build has it");
     }
     if (!usable) return -1;
     std::uintptr_t tp = 0;
     __asm__("mov %%fs:0, %0" : "=r"(tp));
     std::int32_t index = -1;
-    std::memcpy(&index, (void const*)(tp - 0x24d28), sizeof(index));
+    std::memcpy(&index, (void const*)(tp + tls), sizeof(index));
     return index;
 }
 
@@ -124,17 +131,15 @@ void extender_globals_init() {
     // live game (Public at [2], Projects at [9], the rest in enum order).
     // Upstream's ToPath checks each entry, so one the engine has not filled
     // yet reads as unset rather than as garbage.
-    constexpr std::uintptr_t kPathRoots = 0x7d9cd60;
     bg3se::gStaticSymbols->ls__ThreadRegistry__RequestThreadIndex = &request_thread_index;
-    bg3se::gStaticSymbols->ls__PathRoots =
-        reinterpret_cast<bg3se::STDString**>(bg3le::load_bias() + kPathRoots);
+    bg3se::gStaticSymbols->ls__PathRoots = bg3le::target::PathRoots() == 0 ? nullptr
+        : reinterpret_cast<bg3se::STDString**>(bg3le::load_bias() + bg3le::target::PathRoots());
 
     // ls::gTextureAtlasMap: found by content (46 atlases keyed by their .lsx
     // paths, 7089 icons); IconMap is what ImageReference::BindIcon reads.
-    constexpr std::uintptr_t kTextureAtlasMap = 0x7d1c438;
-    bg3se::gStaticSymbols->ls__gTextureAtlasMap =
-        reinterpret_cast<bg3se::TextureAtlasMap**>(bg3le::load_bias()
-                                                   + kTextureAtlasMap);
+    bg3se::gStaticSymbols->ls__gTextureAtlasMap = bg3le::target::TextureAtlasMap() == 0 ? nullptr
+        : reinterpret_cast<bg3se::TextureAtlasMap**>(bg3le::load_bias()
+                                                     + bg3le::target::TextureAtlasMap());
 
     if (bg3se::gExtender == nullptr) {
         bg3se::gExtender = std::make_unique<bg3se::ScriptExtender>();

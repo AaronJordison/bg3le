@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 extern "C" char const* bg3le_fixed_string(std::uint32_t index, std::uint32_t* length);
@@ -30,7 +31,6 @@ namespace bg3le {
 namespace {
 
 // Where the manager's static sat in this build, from the executable's base.
-constexpr std::uintptr_t kRecordedManagerGlobal = 0x7bc1aa0;
 
 // BoostPrototypeManager: IsLoading, ConditionsManager, then Boosts, a
 // HashMap<Guid, BoostPrototype*> whose Keys and Values sit at +32 and +48.
@@ -98,7 +98,7 @@ std::uintptr_t manager_static() {
     static bool searched = false;
     std::uintptr_t mgr = 0;
     if (found != 0 && peek(found, &mgr) && looks_like_manager(mgr)) return found;
-    const std::uintptr_t recorded = image_base() + kRecordedManagerGlobal;
+    const std::uintptr_t recorded = image_base() + bg3le::target::BoostsManager();
     if (image_base() != 0 && peek(recorded, &mgr) && looks_like_manager(mgr)) {
         return found = recorded;
     }
@@ -107,7 +107,7 @@ std::uintptr_t manager_static() {
     found = bg3le_image_find_static(&looks_like_manager);
     if (found != 0) {
         logf("boosts: BoostPrototypeManager static at image+%#lx (recorded +%#lx)",
-             (unsigned long)(found - image_base()), (unsigned long)kRecordedManagerGlobal);
+             (unsigned long)(found - image_base()), (unsigned long)bg3le::target::BoostsManager());
     }
     return found;
 }

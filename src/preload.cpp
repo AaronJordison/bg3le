@@ -29,6 +29,8 @@
 #include "ecs_world.h"
 #include "elf_symbols.h"
 #include "hook.h"
+#include "resolve.h"
+#include "targets.h"
 #include "game_state.h"
 namespace bg3le { void install_entity_trace_hook(); }
 #include "savegame.h"
@@ -418,11 +420,7 @@ extern "C" int clock_gettime(clockid_t clk, struct timespec* ts) {
 // busy. It has no direct call sites -- it is dispatched through a pointer
 // table -- so hooking it is one aligned store.
 //
-// Offsets from tools/recover_symbols.py | tools/find_slots.py against
-// 4.8.400.7143220; hook_slot verifies the slot before touching it.
-constexpr std::uintptr_t kUpdateMessagesSlot = 0x7a88228;
-constexpr std::uintptr_t kUpdateMessagesFunc = 0x7077120;
-
+// Slot and function from targets.h; hook_slot checks the one holds the other.
 using UpdateMessagesProc = void (*)(void*);
 UpdateMessagesProc g_orig_update_messages = nullptr;
 
@@ -437,11 +435,11 @@ void update_messages_hook(void* self) {
 
 void install_tick_hook() {
     void* original = nullptr;
-    if (hook_slot(kUpdateMessagesSlot, kUpdateMessagesFunc,
+    if (hook_slot(target::UpdateMessagesSlot(), target::UpdateMessagesFunc(),
                   reinterpret_cast<void*>(&update_messages_hook), &original)) {
         g_orig_update_messages = reinterpret_cast<UpdateMessagesProc>(original);
         statusf("Hooked server tick at the vtable slot in image+%#lx",
-                (unsigned long)kUpdateMessagesSlot);
+                (unsigned long)target::UpdateMessagesSlot());
     } else {
         statusf("WARNING: server tick hook refused; the prompt will stall "
                 "unless a story is active");
@@ -485,6 +483,7 @@ void ensure_symbols() {
         // The engine names every ECS type index, so the whole registry comes
         // straight out of the symbol table.
         bg3le_corelib_strings_install();
+        resolve_set_symbols(&g_symbols);
         lua_set_symbols(&g_symbols);
         const std::size_t types = ecs::load(g_symbols);
         statusf("ECS registry: %zu type indices (%zu components)", types,
@@ -663,7 +662,7 @@ std::atomic<bool> g_user_stats_vtable_patched{false};
 // as bg3se's patch makes it. Not the per-module "is official" predicate it
 // calls (image+0x37675f0): new games use that too, and with it forced true
 // they started with the base modules only.
-constexpr std::uintptr_t kIsModded = 0x3767580;
+// target::IsModded(), resolved before the first patch and kept, since the patch changes its bytes.
 constexpr unsigned char kIsModdedBytes[11] = {
     0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x50};
 constexpr unsigned char kIsModdedPatch[3] = {0x31, 0xc0, 0xc3};  // xor eax,eax; ret
@@ -711,14 +710,14 @@ bool host_is_game() {
 // Idempotent: applies once, then only re-checks the bytes.
 void ensure_achievement_gate_patch() {
     if (!host_is_game() || achievement_patch_disabled()) return;
-    if (bytes_match(kIsModded, kIsModdedPatch, sizeof(kIsModdedPatch))) {
+    if (bytes_match(target::IsModded(), kIsModdedPatch, sizeof(kIsModdedPatch))) {
         return;
     }
     static bool first = true;
-    if (patch_bytes(kIsModded, kIsModdedBytes, sizeof(kIsModdedBytes),
+    if (patch_bytes(target::IsModded(), kIsModdedBytes, sizeof(kIsModdedBytes),
                     kIsModdedPatch, sizeof(kIsModdedPatch))) {
         logf("EnableAchievements: %s IsModded at 0x%lx",
-             first ? "patched" : "re-applied", (unsigned long)kIsModded);
+             first ? "patched" : "re-applied", (unsigned long)target::IsModded());
     } else if (first) {
         logf("WARNING: EnableAchievements IsModded patch refused -- "
              "achievements will stay mod-blocked");
@@ -1012,7 +1011,7 @@ void dump_osiris_api(void* self) {
     }
 
     if (!achievement_patch_disabled() &&
-        bytes_match(kIsModded, kIsModdedPatch, sizeof(kIsModdedPatch))) {
+        bytes_match(target::IsModded(), kIsModdedPatch, sizeof(kIsModdedPatch))) {
         // Same point at which bg3se reports it.
         statusf("Modded achievements enabled");
     }

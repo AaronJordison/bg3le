@@ -20,6 +20,7 @@
 #include <cstring>
 
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 namespace bg3le {
@@ -28,9 +29,7 @@ void extender_set_global_switches(void* engineSwitches);
 
 namespace {
 
-constexpr std::uintptr_t kGlobal = 0x7d9d198;
 // `mov rsi, [rip+disp]` loading it in the settings registration.
-constexpr std::uintptr_t kLoad = 0x3f5c1c0;
 constexpr unsigned char kLoadBytes[] = {0x48, 0x8b, 0x35};
 
 static_assert(offsetof(bg3se::GlobalSwitches, Language) == 0xc0);
@@ -41,22 +40,22 @@ static_assert(offsetof(bg3se::GlobalSwitches, StartDay) == 0x141c);
 void* find() {
     const std::uintptr_t bias = load_bias();
     unsigned char code[7] = {};
-    if (!safe_read((void const*)(bias + kLoad), code, sizeof(code))
+    if (!safe_read((void const*)(bias + bg3le::target::GlobalSwitchesLoad()), code, sizeof(code))
         || std::memcmp(code, kLoadBytes, sizeof(kLoadBytes)) != 0) {
         logf("global switches: the loading instruction is not at image+%#lx",
-             (unsigned long)kLoad);
+             (unsigned long)bg3le::target::GlobalSwitchesLoad());
         return nullptr;
     }
     std::int32_t disp = 0;
     std::memcpy(&disp, code + 3, sizeof(disp));
-    if (kLoad + sizeof(code) + disp != kGlobal) {
+    if (bg3le::target::GlobalSwitchesLoad() + sizeof(code) + disp != bg3le::target::GlobalSwitches()) {
         logf("global switches: image+%#lx no longer loads image+%#lx",
-             (unsigned long)kLoad, (unsigned long)kGlobal);
+             (unsigned long)bg3le::target::GlobalSwitchesLoad(), (unsigned long)bg3le::target::GlobalSwitches());
         return nullptr;
     }
 
     char* object = nullptr;
-    if (!safe_read((void const*)(bias + kGlobal), &object, sizeof(object)) || object == nullptr) {
+    if (!safe_read((void const*)(bias + bg3le::target::GlobalSwitches()), &object, sizeof(object)) || object == nullptr) {
         return nullptr;
     }
     // Language, "English" on an English install: inline or on the heap, read

@@ -26,6 +26,7 @@
 #include "../ecs_types.h"
 #include "../hook.h"
 #include "../log.h"
+#include "../targets.h"
 
 namespace {
 
@@ -165,7 +166,6 @@ void flush_ecbs_hook(EntityWorld* world) {
     g_flush(world);
 }
 
-constexpr std::uintptr_t kFlushECBs = 0x2486dd0;
 constexpr unsigned char kFlushECBsPrologue[] = {
     0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54,
     0x53, 0x48, 0x83, 0xe4, 0xc0, 0x48, 0x81, 0xec, 0x40, 0x0b, 0x00, 0x00};
@@ -176,12 +176,12 @@ namespace bg3le {
 
 void install_entity_trace_hook() {
     void* original = nullptr;
-    if (bytes_match(kFlushECBs, kFlushECBsPrologue, sizeof(kFlushECBsPrologue))
-        && hook_call_sites(kFlushECBs, reinterpret_cast<void*>(&flush_ecbs_hook), &original, true) > 0) {
+    if (bytes_match(bg3le::target::FlushECBs(), kFlushECBsPrologue, sizeof(kFlushECBsPrologue))
+        && hook_call_sites(bg3le::target::FlushECBs(), reinterpret_cast<void*>(&flush_ecbs_hook), &original, true) > 0) {
         g_flush = reinterpret_cast<FlushProc>(original);
     } else {
         logf("entity trace: EntityWorld::FlushECBs is not at %#lx; Ext.Entity tracing is off",
-             (unsigned long)kFlushECBs);
+             (unsigned long)bg3le::target::FlushECBs());
     }
 }
 

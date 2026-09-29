@@ -325,6 +325,8 @@ add_library(bg3le SHARED
     src/resources.cpp
     src/debug_server.cpp
     src/hook.cpp
+    src/resolve.cpp
+    src/targets.cpp
     src/console.cpp
     src/stackdump.cpp
     src/fast_alloc.cpp

@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "../log.h"
+#include "../targets.h"
 #include "../mem.h"
 
 namespace bg3le {
@@ -29,7 +30,6 @@ extern "C" void* bg3le_entity_world(void* container);
 
 namespace {
 
-constexpr std::uintptr_t kCursorControlVtable = 0x79ec2a0;
 
 // The executable's writable mappings: .data through the anonymous .bss after it.
 std::vector<std::pair<std::uintptr_t, std::uintptr_t>> writable_image() {
@@ -99,7 +99,7 @@ bool small_refmap(char const* at) {
 
 bool is_cursor_control(char const* object) {
     std::uintptr_t vt = 0;
-    return bg3le::safe_read(object, &vt, sizeof(vt)) && vt == bg3le::load_bias() + kCursorControlVtable;
+    return bg3le::safe_read(object, &vt, sizeof(vt)) && vt == bg3le::load_bias() + bg3le::target::CursorControlVtable();
 }
 
 bool is_drag_drop(char const* object) {
@@ -136,7 +136,6 @@ static_assert(offsetof(bg3se::ui::UIStateInstance, State) == 0x20
               && offsetof(bg3se::ui::UIStateInstance, StateWidgets) == 0x100);
 
 namespace {
-constexpr std::uintptr_t kStateMachineVtable = 0x7a0dc28;
 
 bool in_image(std::uintptr_t v) {
     const std::uintptr_t bias = bg3le::load_bias();
@@ -150,7 +149,7 @@ extern "C" void* bg3le_ui_state_machine(void* resourceManager) {
     static std::ptrdiff_t uiAt = -1, machineAt = -1;
     auto const* mgr = static_cast<char const*>(resourceManager);
     if (mgr == nullptr) return nullptr;
-    const std::uintptr_t want = bg3le::load_bias() + kStateMachineVtable;
+    const std::uintptr_t want = bg3le::load_bias() + bg3le::target::StateMachineVtable();
     auto machine_at = [want](char const* ui, std::ptrdiff_t at) -> void* {
         char const* m = nullptr;
         std::uintptr_t vt = 0;
