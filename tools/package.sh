@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Packages a release: dist/bg3le-<version>-linux-x86_64.tar.gz, with the portable libbg3le.so from
+# Packages a release: dist/bg3le-<version>-linux-x86_64.zip, with the portable libbg3le.so from
 # tools/build-sniper.sh, install.py and everything it installs, and the licenses of what the library bundles.
 #
 # The library goes to build/libbg3le.so inside the package, where install.py looks by default, so unpacked, a plain
@@ -60,6 +60,9 @@ loads on any machine that runs the game.
   ./install.py --dry-run    show what would change
   ./install.py --uninstall  remove it
 
+If your unzip tool dropped the executable bit, run python3 install.py instead; the installer sets the permissions of
+what it installs itself.
+
 install.py copies the library, the launch wrapper and the bg3lua console client into ~/.local/share/bg3le, and adds
 the wrapper to the game's Steam launch options. Steam has to be closed for that; it asks before stopping it.
 EOF
@@ -67,8 +70,28 @@ EOF
 # The package installs as it is: every file install.py copies is where it looks for it.
 python3 "$STAGE/install.py" --help > /dev/null
 
-ARCHIVE="$ROOT/dist/$NAME.tar.gz"
-tar -C "$WORK" --owner=0 --group=0 --numeric-owner --sort=name -czf "$ARCHIVE" "$NAME"
+# A zip, which Nexus Mods accepts where it doesn't take a tarball. Unix modes go in each entry's external attributes,
+# so unzip keeps install.py, the wrapper and the client executable. Sorted, for the same archive from the same tree.
+ARCHIVE="$ROOT/dist/$NAME.zip"
+rm -f "$ARCHIVE"
+python3 - "$WORK" "$NAME" "$ARCHIVE" <<'EOF'
+import os, stat, sys, zipfile
+work, name, archive = sys.argv[1:]
+with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+    for dirpath, dirnames, filenames in os.walk(os.path.join(work, name)):
+        dirnames.sort()
+        rel = os.path.relpath(dirpath, work)
+        d = zipfile.ZipInfo(rel + "/")
+        d.external_attr = (stat.S_IFDIR | 0o755) << 16 | 0x10
+        z.writestr(d, "")
+        for f in sorted(filenames):
+            path = os.path.join(dirpath, f)
+            info = zipfile.ZipInfo.from_file(path, os.path.join(rel, f))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (stat.S_IFREG | stat.S_IMODE(os.stat(path).st_mode)) << 16
+            with open(path, "rb") as src:
+                z.writestr(info, src.read())
+EOF
 echo "  $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
 echo "  sha256 $(sha256sum "$ARCHIVE" | cut -d' ' -f1)"
 case "$VERSION" in

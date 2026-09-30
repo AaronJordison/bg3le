@@ -142,7 +142,7 @@ on: the Steam Runtime 3 ("sniper") SDK's 2.31, which is what the game runs
 inside.
 
     tools/build-sniper.sh   # build-sniper/bg3le/libbg3le.so
-    tools/package.sh        # dist/bg3le-<version>-linux-x86_64.tar.gz
+    tools/package.sh        # dist/bg3le-<version>-linux-x86_64.zip
 
 `build-sniper.sh` needs Docker. It unpacks the sniper SDK image as a sysroot,
 builds libc++ (from the LLVM release matching the host clang), abseil and
