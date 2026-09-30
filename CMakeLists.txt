@@ -118,6 +118,8 @@ set_target_properties(lua_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # needs the DirectX headers.
 # ---------------------------------------------------------------------------
 set(EXTERNAL ${CMAKE_CURRENT_SOURCE_DIR}/external/third_party)
+# The SDL2 headers of whatever is being built against: the host, or the sysroot tools/build-sniper.sh sets.
+set(SDL2_INCLUDE ${CMAKE_SYSROOT}/usr/include/SDL2)
 
 add_library(imgui STATIC
     ${EXTERNAL}/imgui/imgui.cpp
@@ -129,7 +131,7 @@ add_library(imgui STATIC
     ${EXTERNAL}/imgui/backends/imgui_impl_sdl2.cpp
 )
 target_include_directories(imgui PUBLIC ${EXTERNAL}/imgui
-    ${EXTERNAL}/Vulkan/include /usr/include/SDL2)
+    ${EXTERNAL}/Vulkan/include ${SDL2_INCLUDE})
 target_compile_options(imgui PRIVATE -w)
 set_target_properties(imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -245,7 +247,7 @@ target_include_directories(bg3se_vendor PUBLIC
     ${EXTERNAL}/rapidjson/include
     ${EXTERNAL}/optick/src
     ${EXTERNAL}/tinycrypt/lib/include
-    /usr/include/SDL2
+    ${SDL2_INCLUDE}
 )
 
 target_compile_definitions(bg3se_vendor PRIVATE
@@ -283,20 +285,24 @@ target_compile_options(bg3se_vendor PRIVATE -w)
 # TBB is deliberately absent: it is not in the Steam runtime container, so
 # vendor/compat implements the two concurrent containers over the standard
 # library instead.
-set(PROTOBUF_LITE ${EXTERNAL}/protobuf/build/libprotobuf-lite.a)
-set(ABSL_PREFIX ${EXTERNAL}/abseil/install)
+# tools/build-sniper.sh points these at its own builds of the two.
+set(BG3LE_PROTOBUF_BUILD ${EXTERNAL}/protobuf/build CACHE PATH "protobuf build directory")
+set(ABSL_PREFIX ${EXTERNAL}/abseil/install CACHE PATH "abseil install prefix")
+set(PROTOBUF_LITE ${BG3LE_PROTOBUF_BUILD}/libprotobuf-lite.a)
 if(NOT EXISTS ${PROTOBUF_LITE})
     message(FATAL_ERROR "protobuf not built; run tools/fetch-externals.sh")
 endif()
 
 file(GLOB ABSL_LIBS ${ABSL_PREFIX}/lib/libabsl_*.a)
-list(APPEND ABSL_LIBS ${EXTERNAL}/protobuf/build/third_party/utf8_range/libutf8_validity.a)
+list(APPEND ABSL_LIBS ${BG3LE_PROTOBUF_BUILD}/third_party/utf8_range/libutf8_validity.a)
 
 # bg3le_noesis_*.inl, included from upstream ClientUI sources.
 target_include_directories(bg3se_vendor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor)
 
 target_include_directories(bg3se_vendor PRIVATE
     ${EXTERNAL}/protobuf/src
+    # utf8_validity.h, which protobuf's headers include; without this it came from the host's protobuf package.
+    ${EXTERNAL}/protobuf/third_party/utf8_range
     ${ABSL_PREFIX}/include)
 
 # The abseil archives are mutually dependent, so a single left-to-right pass

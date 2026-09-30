@@ -132,6 +132,28 @@ to agree on one standard library, so this applies to bg3le's own sources as
 well. It is linked statically, for the same reason Lua is vendored: a shim
 loaded inside the Steam runtime container cannot rely on host libraries.
 
+### Release builds
+
+`build/` is built against the host's glibc and asks for whatever symbol
+versions it has — `acosf@GLIBC_2.43` on a rolling distribution — so it won't
+load on an older one. glibc can't be linked statically into a library loaded
+into the game, so a release is built against the oldest glibc it has to run
+on: the Steam Runtime 3 ("sniper") SDK's 2.31, which is what the game runs
+inside.
+
+    tools/build-sniper.sh   # build-sniper/bg3le/libbg3le.so
+    tools/package.sh        # dist/bg3le-<version>-linux-x86_64.tar.gz
+
+`build-sniper.sh` needs Docker. It unpacks the sniper SDK image as a sysroot,
+builds libc++ (from the LLVM release matching the host clang), abseil and
+protobuf against it, then bg3le with the host's clang
+(`cmake/sniper-toolchain.cmake`), and fails if the result asks for any glibc
+newer than 2.31. Each step is skipped once built; delete `build-sniper/` to
+start over. `package.sh` runs it, then packs the library with `install.py`, the
+launch wrapper, the console client and the licenses: unpacked, `./install.py`
+installs it with no arguments. The version is `git describe`'s, or
+`BG3LE_VERSION`.
+
 ## Running
 
 Build, then install:
@@ -292,6 +314,8 @@ their enclosing functions via `.eh_frame_hdr`.
 
 ## Licence
 
-bg3le's own code is MIT. `vendor/bg3se/` remains under its upstream MIT +
-Commons Clause terms; `vendor/bg3se/LICENSE` applies to it and forbids selling
-the software.
+bg3le's own code is MIT ([LICENSE](LICENSE)). `vendor/bg3se/` remains under
+its upstream MIT + Commons Clause terms; `vendor/bg3se/LICENSE` applies to it
+and forbids selling the software. The built library contains that code, so a
+release carries the Commons Clause as a whole; release packages ship the
+licenses of everything compiled into it under `licenses/`.

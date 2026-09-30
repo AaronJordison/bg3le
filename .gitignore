@@ -13,3 +13,9 @@ external/third_party/
 
 # clangd build database
 compile_commands.json
+
+# tools/build-sniper.sh: sysroot, libc++, externals and the portable build
+build-sniper/
+
+# tools/package.sh: release archives
+dist/
