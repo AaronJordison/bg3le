@@ -5,6 +5,10 @@ A script extender for the **native Linux build** of Baldur's Gate 3.
 The existing Script Extender targets the Windows build, so Linux players run
 the game under Proton to get it. bg3le attaches to `bin/bg3` directly.
 
+**Download it from [Nexus Mods](https://www.nexusmods.com/baldursgate3/mods/25431):**
+a ready-built release that loads on any Linux system the game runs on. Unzip
+it and run `./install.py`. Building from source is below.
+
 ## Credit
 
 This project stands on [Norbyte's Baldur's Gate 3 Script
