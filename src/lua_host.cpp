@@ -12467,25 +12467,30 @@ end
 -- of the 57 installed modules -- so a mod asking about a neighbour got
 -- nil, and MCM said "Mod 755a8a72-... was not found by MCM" for each one.
 -- The available list is the engine's own and covers them.
-local available_by_uuid = nil
+--
+-- Rebuilt whenever the engine's count changes: the list can still be
+-- filling when the first client mod loads, and a table cached then would
+-- keep later modules out for the whole session.
+local available = {count = nil, by_uuid = {}}
 
 local function available_mod(uuid)
-  if available_by_uuid == nil then
-    available_by_uuid = {}
-    local n = Ext._Internal.ModAvailableCount()
-    for i = 0, (n or 0) - 1 do
+  local n = Ext._Internal.ModAvailableCount() or 0
+  if n ~= available.count then
+    available.count = n
+    available.by_uuid = {}
+    for i = 0, n - 1 do
       local addr = Ext._Internal.ModAvailableAt(i)
       if addr ~= nil then
         local info = Ext._Internal.ModInfo(addr)
         local id = info and info.ModuleUUIDString
-        if id ~= nil and id ~= "" and available_by_uuid[id] == nil then
-          available_by_uuid[id] = addr
+        if id ~= nil and id ~= "" and available.by_uuid[id] == nil then
+          available.by_uuid[id] = addr
         end
       end
     end
   end
 
-  local addr = available_by_uuid[uuid]
+  local addr = available.by_uuid[uuid]
   return addr ~= nil and make_mod(addr) or nil
 end
 
@@ -12539,7 +12544,14 @@ function Ext.Mod.GetMod(uuid)
 
   -- And last, what the archives say. Returning nil here breaks any mod
   -- that looks its neighbours up, Mod Configuration Menu included.
-  return installed_mod(uuid)
+  known = installed_mod(uuid)
+  if known == nil then
+    -- Said, so the next failure names the module and when it was asked.
+    print(("bg3le: GetMod found no module for %s (%d loaded, %d available)")
+          :format(uuid, Ext._Internal.ModCount() or -1,
+                  Ext._Internal.ModAvailableCount() or -1))
+  end
+  return known
 end
 
 -- ModManager::BaseModule, which is the campaign module rather than the first
