@@ -2741,6 +2741,10 @@ extern "C" int bg3le_ext_mod_settings_order(lua_State* L);
 extern "C" int bg3le_ext_show_error_and_exit(lua_State* L);
 extern "C" int bg3le_json_parse(lua_State* L);
 extern "C" int bg3le_ext_pak_read(lua_State* L);
+extern "C" int bg3le_ext_plugin_list(lua_State* L);
+extern "C" int bg3le_ext_plugin_settings(lua_State* L);
+extern "C" int bg3le_ext_plugin_get(lua_State* L);
+extern "C" int bg3le_ext_plugin_set(lua_State* L);
 extern "C" int bg3le_ext_save_file(lua_State* L);
 extern "C" int bg3le_ext_write_data_file(lua_State* L);
 extern "C" int bg3le_ext_memory_usage(lua_State* L);
@@ -8057,6 +8061,15 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "ModSettingsOrder");
     lua_pushcfunction(g_lua, bg3le_ext_pak_read);
     lua_setfield(g_lua, -2, "PakRead");
+    // Native plugins (src/plugins.cpp); the prelude makes them Ext.Plugins.
+    lua_pushcfunction(g_lua, bg3le_ext_plugin_list);
+    lua_setfield(g_lua, -2, "PluginList");
+    lua_pushcfunction(g_lua, bg3le_ext_plugin_settings);
+    lua_setfield(g_lua, -2, "PluginSettings");
+    lua_pushcfunction(g_lua, bg3le_ext_plugin_get);
+    lua_setfield(g_lua, -2, "PluginGet");
+    lua_pushcfunction(g_lua, bg3le_ext_plugin_set);
+    lua_setfield(g_lua, -2, "PluginSet");
     lua_pop(g_lua, 1);
 
     // ---- Ext.Math ----
@@ -8530,6 +8543,17 @@ end
 function Ext.IO.AppendFile(path, contents)
   return Ext._Internal.SaveFile(path, tostring(contents), true)
 end
+
+-- bg3le's own, not upstream's: native plugins (include/bg3le_plugin.h) and
+-- the settings they register. Set saves the plugin's settings file.
+Ext.Plugins = {
+  List = function() return Ext._Internal.PluginList() end,
+  GetSettings = function(name) return Ext._Internal.PluginSettings(tostring(name)) end,
+  Get = function(name, id) return Ext._Internal.PluginGet(tostring(name), tostring(id)) end,
+  Set = function(name, id, value)
+    return Ext._Internal.PluginSet(tostring(name), tostring(id), value)
+  end,
+}
 
 -- Upstream's: consulted by the engine's FileReader (src/vendor/path_override.cpp),
 -- keyed by absolute data path.

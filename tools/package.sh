@@ -19,7 +19,7 @@ NAME="bg3le-$VERSION-linux-x86_64"
 WORK="$ROOT/build-sniper/package"
 STAGE="$WORK/$NAME"
 rm -rf "$WORK"
-mkdir -p "$STAGE/build" "$STAGE/installer" "$STAGE/client" "$STAGE/licenses" "$ROOT/dist"
+mkdir -p "$STAGE/build" "$STAGE/installer" "$STAGE/client" "$STAGE/licenses" "$STAGE/include" "$ROOT/dist"
 
 echo "== $NAME =="
 install -m 0755 "$ROOT/build-sniper/bg3le/libbg3le.so" "$STAGE/build/libbg3le.so"
@@ -28,6 +28,7 @@ install -m 0755 "$ROOT/installer/bg3le-launch" "$STAGE/installer/bg3le-launch"
 install -m 0755 "$ROOT/client/bg3lua" "$STAGE/client/bg3lua"
 install -m 0644 "$ROOT/README.md" "$STAGE/README.md"
 install -m 0644 "$ROOT/LICENSE" "$STAGE/LICENSE"
+install -m 0644 "$ROOT/include/bg3le_plugin.h" "$STAGE/include/bg3le_plugin.h"
 
 # What libbg3le.so is built from, beyond bg3le itself: statically linked code and compiled-in headers.
 lic() {  # lic <name> <file>

@@ -33,6 +33,10 @@ int sdl_on_poll_event(int (*next)(SDL_Event*), SDL_Event* event);
 void sdl_on_text_input_active(bool active);
 bool sdl_wants_text_input();
 
+// src/plugins.cpp.
+void plugins_load();
+bool plugins_dispatch_event(SDL_Event* event);
+
 }  // namespace bg3le
 
 namespace {
@@ -144,12 +148,16 @@ extern "C" int SDL_PollEvent(SDL_Event* event) {
     using Fn = int (*)(SDL_Event*);
     static const Fn next = real<Fn>("SDL_PollEvent");
     if (next == nullptr) return 0;
+    // Native plugins start with the game's event loop, once the engine is up.
+    bg3le::plugins_load();
     if (event != nullptr && take_injected(event)) return 1;
 
     int result = bg3le::imgui_overlay_wanted()
         ? bg3le::sdl_on_poll_event(next, event) : next(event);
     // After the overlay has had it, as upstream orders them.
     if (result == 1 && dispatch_input(event)) result = 0;
+    // Plugins see what is left for the game.
+    if (result == 1 && event != nullptr && bg3le::plugins_dispatch_event(event)) result = 0;
     return result;
 }
 

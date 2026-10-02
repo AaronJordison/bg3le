@@ -77,6 +77,10 @@ structure was found, and what was measured, is in
   1 s ([reference/SLOW-LOAD-DIAGNOSIS.md](reference/SLOW-LOAD-DIAGNOSIS.md)),
   an eGPU endgame save from 30 to 71 fps (also usable on its own, see
   [MEMSTEER.md](MEMSTEER.md)), and the engine's thread pinning undone.
+- **Native plugins**: shared libraries dropped in
+  `~/.local/share/bg3le/plugins` load with the game, no launch option
+  needed, and expose their settings to Lua (and so to MCM). See
+  [Native plugins](#native-plugins).
 - A Lua debugger server for the [bg3lua](https://github.com/lenonk/bg3lua)
   client (the `client/` submodule).
 
@@ -240,6 +244,45 @@ can be fetched with the Steam console (`steam -console`, then
 The reference capture in `reference/` was taken against game `v4.73.98.727`,
 recorded in `reference/version.txt` so a later mismatch is attributable. Its
 523 struct layouts still match v4.76.31.656 (`Ext._Internal.SizeAudit()`).
+
+## Native plugins
+
+A plugin is a shared library in `~/.local/share/bg3le/plugins` (or
+`$BG3LE_PLUGINS_DIR`). bg3le loads each `.so` there, in name order, on the
+game's first `SDL_PollEvent`, once the engine is up, and calls its
+`bg3le_plugin_init()`. Nothing goes in `LD_PRELOAD` or the launch options.
+
+The whole API is [include/bg3le_plugin.h](include/bg3le_plugin.h); a plugin
+builds against that header alone. The host table it receives offers:
+
+- `describe`, `log` and `warn`: its name and version, and lines in bg3le's
+  log (warnings also on the debug console);
+- `add_event_handler`: every SDL event the game is about to receive, after
+  bg3le's overlay; returning nonzero keeps it from the game;
+- `sdl_function`: SDL's own functions by name, which a `dlopen()`ed library
+  can't reach with `dlsym(RTLD_NEXT)`;
+- `add_setting`: a bool, int or float of the plugin's, readable and writable
+  from Lua.
+
+Settings persist in `<plugin>.settings.json` beside the plugin. bg3le
+rewrites it, listing every setting, each time the plugin starts and whenever
+Lua changes one, and applies the saved value when the plugin registers the
+setting, so they hold from its first frame. With the game closed, the file
+can be edited by hand instead of through Lua. Lua sees them as
+
+```lua
+Ext.Plugins.List()                     -- {Name, Version, File, Loaded, Error}
+Ext.Plugins.GetSettings(name)          -- {Id, Type, Value, Min, Max}
+Ext.Plugins.Get(name, id)
+Ext.Plugins.Set(name, id, value)       -- true, or false and why
+```
+
+which is how an SE mod puts them in MCM. A plugin whose init fails is
+reported in `Ext.Plugins.List()` with its handlers and settings dropped, but
+stays loaded, since it may already have patched code that jumps into it.
+
+[Linux Native Camera Tweaks](https://github.com/lenonk/LinuxNativeCameraTweaks),
+a fork of Biiinks78's camera mod, is one, with its settings in MCM.
 
 ## Contributing
 

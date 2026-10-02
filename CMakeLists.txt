@@ -348,12 +348,22 @@ add_library(bg3le SHARED
     src/math.cpp
     src/ext_libs.cpp
     src/builtin_lua.cpp
+    src/plugins.cpp
     # Yann Collet's LZ4, vendored rather than linked: the sniper container
     # need not have liblz4, and a missing DT_NEEDED would stop bg3le loading
     # at all. See vendor/NOTICE.md.
     external/lz4/lz4.c
 )
 set_source_files_properties(external/lz4/lz4.c PROPERTIES COMPILE_FLAGS -w)
+# The version plugins see in bg3le_host, from git at configure time.
+execute_process(COMMAND git describe --tags --always --dirty
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE BG3LE_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT BG3LE_VERSION)
+    set(BG3LE_VERSION unknown)
+endif()
+set_source_files_properties(src/plugins.cpp PROPERTIES
+    COMPILE_DEFINITIONS "BG3LE_VERSION=\"${BG3LE_VERSION}\"")
 # bg3se's builtin Lua scripts, for builtin:// paths.
 set(BUILTIN_LUA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/vendor/bg3se/BG3Extender/LuaScripts)
 file(GLOB_RECURSE BUILTIN_LUA_FILES ${BUILTIN_LUA_ROOT}/*.lua)
