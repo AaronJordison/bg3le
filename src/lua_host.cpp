@@ -13997,6 +13997,10 @@ local function load_mod_from(name, uuid, read, report)
   -- twice.
   local env
   local required = {}
+  -- Chunk names as upstream's LuaLoadModScript gives them: "<Directory>/<file>",
+  -- no "@", a directory over 37 characters losing its "_<guid>". MCM 1.41
+  -- reads the calling mod from the first part of the source.
+  local script_dir = #name > 37 and name:sub(1, #name - 37) or name
   local function mod_require(path, second)
     if second ~= nil then
       -- Ext.Require(mod, path): a file of that mod, as upstream's
@@ -14021,7 +14025,7 @@ local function load_mod_from(name, uuid, read, report)
     if not text then
       error("bg3le: Ext.Require could not read " .. path, 0)
     end
-    local chunk, err = Ext._Internal.RawLoad(text, "@" .. path, "t", env)
+    local chunk, err = Ext._Internal.RawLoad(text, script_dir .. "/" .. path, "t", env)
     if not chunk then error(err, 0) end
     local results = table.pack(chunk())
     required[path] = results
@@ -14071,7 +14075,7 @@ local function load_mod_from(name, uuid, read, report)
   local global_require = Ext.Require
   Ext.Require = mod_require
 
-  local chunk, err = Ext._Internal.RawLoad(source, "@" .. name .. "/" .. boot,
+  local chunk, err = Ext._Internal.RawLoad(source, script_dir .. "/" .. boot,
                                            "t", env)
   if not chunk then
     ModuleUUID = previous
