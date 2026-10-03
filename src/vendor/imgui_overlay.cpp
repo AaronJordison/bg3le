@@ -33,6 +33,7 @@
 #include <Extender/ScriptExtender.h>
 
 #include <atomic>
+#include <chrono>
 #include <pthread.h>
 #include <cstdint>
 #include <cstdio>
@@ -247,6 +248,20 @@ void record_window() {
     g_watch_valid = true;
 }
 
+// How long the frame's Update took -- the widget tree and imgui's own work,
+// on the game's main thread -- since the last Ext._Internal.ImguiTiming().
+std::atomic<std::uint64_t> g_update_total_us{0};
+std::atomic<std::uint64_t> g_update_max_us{0};
+std::atomic<std::uint64_t> g_update_count{0};
+
+void note_update_time(std::chrono::steady_clock::duration took) {
+    const auto us = (std::uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(took).count();
+    g_update_total_us.fetch_add(us, std::memory_order_relaxed);
+    g_update_count.fetch_add(1, std::memory_order_relaxed);
+    std::uint64_t max = g_update_max_us.load(std::memory_order_relaxed);
+    while (us > max && !g_update_max_us.compare_exchange_weak(max, us)) {}
+}
+
 void record_frame() {
     g_frames.fetch_add(1, std::memory_order_relaxed);
 
@@ -400,7 +415,9 @@ void imgui_overlay_tick() {
 
     try {
         const std::lock_guard<std::mutex> held(frame_lock());
+        const auto started = std::chrono::steady_clock::now();
         ui->Update();
+        note_update_time(std::chrono::steady_clock::now() - started);
         imgui_flush_events();
         record_frame();
     } catch (std::exception const& e) {
@@ -545,6 +562,16 @@ extern "C" void bg3le_imgui_frame_stats(std::uint64_t* frames,
     if (lists != nullptr) {
         *lists = bg3le::g_last_lists.load(std::memory_order_relaxed);
     }
+}
+
+// Frames, average and worst Update time in microseconds since the last call.
+extern "C" void bg3le_imgui_timing(std::uint64_t* frames, std::uint64_t* averageUs,
+                                   std::uint64_t* maxUs) {
+    const std::uint64_t n = bg3le::g_update_count.exchange(0);
+    const std::uint64_t total = bg3le::g_update_total_us.exchange(0);
+    *frames = n;
+    *averageUs = n > 0 ? total / n : 0;
+    *maxUs = bg3le::g_update_max_us.exchange(0);
 }
 
 extern "C" void bg3le_imgui_status(bool* wanted, bool* started,

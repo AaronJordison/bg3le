@@ -3986,6 +3986,19 @@ int l_imgui_frame_stats(lua_State* L) {
     return 4;
 }
 
+// Ext._Internal.ImguiTiming() -> frames, averageUs, maxUs of the overlay's
+// per-frame Update since the last call.
+extern "C" void bg3le_imgui_timing(std::uint64_t* frames, std::uint64_t* averageUs,
+                                   std::uint64_t* maxUs);
+int l_imgui_timing(lua_State* L) {
+    std::uint64_t frames = 0, average = 0, max = 0;
+    bg3le_imgui_timing(&frames, &average, &max);
+    lua_pushinteger(L, (lua_Integer)frames);
+    lua_pushinteger(L, (lua_Integer)average);
+    lua_pushinteger(L, (lua_Integer)max);
+    return 3;
+}
+
 // Ext._Internal.ImguiSetCallback(handle, name) -> id or nil
 //
 // The calling state is what identifies the context, so an event a client
@@ -7787,6 +7800,8 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "ImguiFrameStats");
     lua_pushcfunction(g_lua, l_imgui_set_callback);
     lua_setfield(g_lua, -2, "ImguiSetCallback");
+    lua_pushcfunction(g_lua, l_imgui_timing);
+    lua_setfield(g_lua, -2, "ImguiTiming");
     lua_pushcfunction(g_lua, l_imgui_clear_callback);
     lua_setfield(g_lua, -2, "ImguiClearCallback");
     lua_pushcfunction(g_lua, l_imgui_take_event);
