@@ -16,6 +16,9 @@
 - Fixed `Ext.IMGUI` InputText's `Text`, which read as nothing and could not be set: upstream declares it as a getter
   and setter, which bg3le's field tables leave out. Forms that check their fields, such as Armory's preset editor,
   said every field was empty.
+- Added `Ext.ClientNet`, `ClientInput`, `ClientTemplate`, `ClientLevel`, `ClientAudio`, `ClientIMGUI` and `ClientUI`
+  in the client context, and kept `ServerNet`, `ServerLevel` and `ServerTemplate` to the server's, as upstream
+  registers them.
 
 ## v0.2.0 (2026-10-02)
 

@@ -15835,21 +15835,31 @@ local CONTEXT_MODULES = {
   {"ClientTypes", "Types", {GenerateIdeHelpers = true}},
   {"ClientUtils", "Utils", {GameTime = true, LoadTestLibrary = true, MicrosecTime = true, MonotonicTime = true, Print = true, PrintError = true, PrintWarning = true, Profile = true, ProfileNamed = true, Random = true, Round = true}},
   {"ClientVars", "Vars"},
+  -- Modules upstream registers for one context only (DECLARE_MODULE(x, Client)
+  -- or Server) get only that context's prefix, and only in that context. The
+  -- capture the table came from was the server's, so these were missing.
+  {"ClientAudio", "Audio", nil, "Client"},
+  {"ClientIMGUI", "IMGUI", nil, "Client"},
+  {"ClientInput", "Input", nil, "Client"},
+  {"ClientLevel", "Level", nil, "Client"},
+  {"ClientNet", "Net", nil, "Client"},
+  {"ClientTemplate", "Template", nil, "Client"},
+  {"ClientUI", "UI", nil, "Client"},
   {"ServerDebug", "Debug"},
   {"ServerEntity", "Entity", {GetEntitiesOnTile = true}},
   {"ServerIO", "IO"},
   {"ServerJson", "Json"},
-  {"ServerLevel", "Level"},
+  {"ServerLevel", "Level", nil, "Server"},
   {"ServerLoca", "Loca"},
   {"ServerLog", "Log"},
   {"ServerMath", "Math"},
   {"ServerMod", "Mod"},
-  {"ServerNet", "Net"},
+  {"ServerNet", "Net", nil, "Server"},
   {"ServerResource", "Resource"},
   {"ServerStaticData", "StaticData"},
   {"ServerStats", "Stats", {LoadStatsFile = true}},
   {"ServerTable", "Table"},
-  {"ServerTemplate", "Template"},
+  {"ServerTemplate", "Template", nil, "Server"},
   {"ServerTimer", "Timer"},
   {"ServerTypes", "Types", {GenerateIdeHelpers = true}},
   {"ServerUtils", "Utils", {GameTime = true, LoadTestLibrary = true, MicrosecTime = true, MonotonicTime = true, Print = true, PrintError = true, PrintWarning = true, Profile = true, ProfileNamed = true, Random = true, Round = true}},
@@ -15900,9 +15910,14 @@ Ext.Utils.GameTime = Ext.Timer.GameTime
 Ext.Entity.GetTile = Ext.Level.GetTile
 Ext.Entity.GetEntitiesOnTile = Ext.Level.GetEntitiesOnTile
 
-for _, entry in ipairs(CONTEXT_MODULES) do
-  local name, from, omit = entry[1], entry[2], entry[3]
-  if Ext[from] ~= nil then Ext[name] = context_view(Ext[from], omit) end
+do
+  local context = Ext._Internal.IsClientState() and "Client" or "Server"
+  for _, entry in ipairs(CONTEXT_MODULES) do
+    local name, from, omit, only = entry[1], entry[2], entry[3], entry[4]
+    if Ext[from] ~= nil and (only == nil or only == context) then
+      Ext[name] = context_view(Ext[from], omit)
+    end
+  end
 end
 
 -- Upstream's own Lua for these, from the builtin bundle: LoadStatsFile reads
