@@ -4796,11 +4796,20 @@ int l_component_type_names(lua_State* L) {
 //
 // A component answers to three names and only one of them keys the type
 // registry, so a view has to be told which it is before it can report a type.
+// A name may be both a component's and a class's ("Origin" is a component
+// and a static data resource); a caller holding a class name says so, and
+// the class is looked up first.
+void const* meta_by_name(const char* name, bool classFirst) {
+    void const* meta = classFirst ? bg3le_meta_class(name) : bg3le_meta_component(name);
+    if (meta == nullptr) meta = classFirst ? bg3le_meta_component(name) : bg3le_meta_class(name);
+    return meta;
+}
+
+// Ext._Internal.ClassName(name[, classFirst])
 int l_class_name(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
 
-    void const* meta = bg3le_meta_component(name);
-    if (meta == nullptr) meta = bg3le_meta_class(name);
+    void const* meta = meta_by_name(name, lua_toboolean(L, 2) != 0);
     if (meta == nullptr) return 0;
 
     char const* className = bg3le_meta_class_name(meta);
@@ -4814,12 +4823,12 @@ int l_class_name(lua_State* L) {
 // A nested struct is an object with a type of its own, and a view over one
 // should say which -- Ext.Types.GetObjectType on entity.Transform.Translate
 // has to name a type GetTypeInfo can then find.
+// Ext._Internal.TypeNameAt(class, path[, classFirst])
 int l_type_name_at(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
     const char* path = luaL_optstring(L, 2, "");
 
-    void const* meta = bg3le_meta_component(name);
-    if (meta == nullptr) meta = bg3le_meta_class(name);
+    void const* meta = meta_by_name(name, lua_toboolean(L, 3) != 0);
     if (meta == nullptr) return 0;
 
     char const* found = nullptr;
@@ -9577,9 +9586,10 @@ end
 -- Ext.Types.GetObjectType returns upstream -- and custom members are filed
 -- under the maps' spelling, so a function a mod added to TranslatedString
 -- was never found on one nested inside anything.
-function Ext._Internal.ViewTypeName(class, prefix)
-  if prefix == "" then return Ext._Internal.ClassName(class) end
-  local raw = Ext._Internal.TypeNameAt(class, prefix)
+-- classFirst for a view built from a class name rather than a component's.
+function Ext._Internal.ViewTypeName(class, prefix, classFirst)
+  if prefix == "" then return Ext._Internal.ClassName(class, classFirst) end
+  local raw = Ext._Internal.TypeNameAt(class, prefix, classFirst)
   if raw == nil then return nil end
   local plain = raw:gsub("bg3se::", "")
   return Ext._Internal.ClassName(plain) or plain
@@ -13729,7 +13739,7 @@ function read_object(addr, class, prefix, out)
 
   -- The type this view is of, for Ext.Types.GetObjectType and for the members
   -- a mod may have grafted on with Ext.Types.AddCustomFunction.
-  local viewType = Ext._Internal.ViewTypeName(class, prefix)
+  local viewType = Ext._Internal.ViewTypeName(class, prefix, true)
 
   return Ext._Internal.NewObjectProxy({
     __bg3leIdentity = function() return "o:" .. addr .. ":" .. prefix end,

@@ -22,6 +22,9 @@
 - `Ext.Mod.GetMod` no longer logs a line for an argument that is not a UUID (upstream returns nil quietly; Armory's
   item report probes every mod by name), and a stat's `ModId` and `OriginalModId` are `""` rather than nil when no
   mod is known, as upstream's are.
+- Fixed nested objects in `Ext.StaticData` resources whose type name is also a component's, such as `Origin`:
+  they were typed from the component, so `Origin.DisplayName` had no `Get()` (Armory's preset activation stopped
+  there).
 
 ## v0.2.0 (2026-10-02)
 
