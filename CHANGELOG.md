@@ -1,12 +1,13 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 (2026-10-03)
 
 - **Multiplayer.** `Ext.Net` and synced `Ext.Vars` now cross between machines over the game's connection, in
   bg3se's own protocol: a bg3le host serves clients running bg3se on Windows and bg3le alike, and a bg3le client
   joins either kind of host. Before this they never left the machine, so on a bg3le host other players' Mod
   Configuration Menu could not reach the server. Message ID 400, the `" Extender_0"` connect tag and the hello
-  handshake are upstream's; see reference/NETWORK.md.
+  handshake are upstream's; see reference/NETWORK.md. Tested over the game's own loopback, not yet with a second
+  machine: reports welcome.
 - `Ext.Net` follows upstream's API exactly: the server context has `BroadcastMessage`, `PostMessageToClient`,
   `PostMessageToUser` and `PlayerHasExtender`, the client `PostMessageToServer`, both `IsHost` and `Version`; net
   channels are upstream's `NetChannel`, with requests answered by reply ID.
