@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 (2026-10-03)
+## v0.2.1 (2026-10-03)
 
 - **Multiplayer.** `Ext.Net` and synced `Ext.Vars` now cross between machines over the game's connection, in
   bg3se's own protocol: a bg3le host serves clients running bg3se on Windows and bg3le alike, and a bg3le client
