@@ -19,6 +19,9 @@
 - Added `Ext.ClientNet`, `ClientInput`, `ClientTemplate`, `ClientLevel`, `ClientAudio`, `ClientIMGUI` and `ClientUI`
   in the client context, and kept `ServerNet`, `ServerLevel` and `ServerTemplate` to the server's, as upstream
   registers them.
+- `Ext.Mod.GetMod` no longer logs a line for an argument that is not a UUID (upstream returns nil quietly; Armory's
+  item report probes every mod by name), and a stat's `ModId` and `OriginalModId` are `""` rather than nil when no
+  mod is known, as upstream's are.
 
 ## v0.2.0 (2026-10-02)
 

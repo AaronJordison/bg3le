@@ -12732,8 +12732,11 @@ function Ext.Mod.GetMod(uuid)
   -- And last, what the archives say. Returning nil here breaks any mod
   -- that looks its neighbours up, Mod Configuration Menu included.
   known = installed_mod(uuid)
-  if known == nil then
-    -- Said, so the next failure names the module and when it was asked.
+  -- Said, so the next failure names the module and when it was asked; but
+  -- only for a UUID. Mods also probe with names (Armory's item report does,
+  -- for every mod), and upstream answers those with a quiet nil.
+  if known == nil and type(uuid) == "string"
+     and uuid:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then
     print(("bg3le: GetMod found no module for %s (%d loaded, %d available)")
           :format(uuid, Ext._Internal.ModCount() or -1,
                   Ext._Internal.ModAvailableCount() or -1))
@@ -13280,13 +13283,14 @@ local STAT_NIL = setmetatable({}, {__tostring = function() return "nil" end})
 -- for. Names and shapes follow reference/stats-weapon.txt.
 local STAT_EXTRAS = {
   Name = function(self) return rawget(self, "__name") end,
+  -- An empty string when no mod is known, as upstream's empty FixedString.
   ModId = function(self)
     local modId = Ext._Internal.StatOrigin(rawget(self, "__name"))
-    return modId
+    return modId or ""
   end,
   OriginalModId = function(self)
     local _, original = Ext._Internal.StatOrigin(rawget(self, "__name"))
-    return original
+    return original or ""
   end,
   ModifierList = function(self)
     return Ext._Internal.StatsType(rawget(self, "__addr"))
