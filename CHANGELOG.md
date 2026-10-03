@@ -13,6 +13,9 @@
 - Messages carry real user IDs (peer << 16 | slot, so 65537 for the host's player) instead of 1, matching a
   character's `UserID`.
 - A host's Lua reset also resets clients on other machines, as upstream's does.
+- Fixed `Ext.IMGUI` InputText's `Text`, which read as nothing and could not be set: upstream declares it as a getter
+  and setter, which bg3le's field tables leave out. Forms that check their fields, such as Armory's preset editor,
+  said every field was empty.
 
 ## v0.2.0 (2026-10-02)
 

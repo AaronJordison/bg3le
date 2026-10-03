@@ -8916,6 +8916,10 @@ local IMGUI_METHOD = {
 local imgui_widget = {}
 local make_widget
 
+-- Properties upstream declares as a getter/setter pair (P_GETTER_SETTER):
+-- read and written through the widget's Get<Name>/Set<Name>.
+local IMGUI_GETSET = {Text = true}
+
 local function type_of_widget(handle)
   local _, short = Ext._Internal.ImguiObject(handle)
   return short
@@ -8998,6 +9002,12 @@ imgui_widget.__index = function(self, key)
     return children
   end
 
+  -- Upstream's getter/setter properties have no field to read.
+  if IMGUI_GETSET[key] then
+    local ok, value = Ext._Internal.ImguiCall(handle, "Get" .. key)
+    if ok then return value end
+  end
+
   if addr ~= nil then
     local value, err = Ext._Internal.ObjectGetField(addr, class, key)
     if err == nil then return value end
@@ -9073,6 +9083,10 @@ imgui_widget.__newindex = function(self, key, value)
   if value == nil and Ext._Internal.ImguiSetCallback(handle, key) ~= nil then
     Ext._Internal.ImguiClearCallback(handle, key)
     return
+  end
+
+  if IMGUI_GETSET[key] and value ~= nil then
+    if Ext._Internal.ImguiCall(handle, "Set" .. key, tostring(value)) then return end
   end
 
   local addr, class = widget_object(handle)

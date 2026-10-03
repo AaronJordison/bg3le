@@ -160,6 +160,14 @@ void give_float(ImguiArg* out, std::optional<float> value) {
     out->Number = *value;
 }
 
+// Held until the caller has copied it, which it does before the next call.
+void give_text(ImguiArg* out, STDString const& value) {
+    thread_local std::string held;
+    held.assign(value.data(), value.size());
+    out->Kind = kImguiArgText;
+    out->Text = held.c_str();
+}
+
 void give_vec4(ImguiArg* out, std::optional<glm::vec4> value) {
     if (!value) {
         give_nothing(out);
@@ -354,6 +362,21 @@ bool imgui_call_method(Renderable* object, char const* name,
         }
         if (BG3LE_IS("Tooltip")) {
             give_handle(out, styled->Tooltip());
+            return true;
+        }
+    }
+
+    // InputText.Text is a getter/setter pair upstream (P_GETTER_SETTER), with
+    // no field of its own in the tables; Ext.IMGUI's proxy reads and writes
+    // it through these. SetText also makes an active field reload its buffer.
+    auto* input = dynamic_cast<InputText*>(object);
+    if (input != nullptr) {
+        if (BG3LE_IS("GetText")) {
+            give_text(out, input->GetText());
+            return true;
+        }
+        if (BG3LE_IS("SetText")) {
+            input->SetText(STDString(as_text(args, count, 0)));
             return true;
         }
     }
