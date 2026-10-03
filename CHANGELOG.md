@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Multiplayer.** `Ext.Net` and synced `Ext.Vars` now cross between machines over the game's connection, in
+  bg3se's own protocol: a bg3le host serves clients running bg3se on Windows and bg3le alike, and a bg3le client
+  joins either kind of host. Before this they never left the machine, so on a bg3le host other players' Mod
+  Configuration Menu could not reach the server. Message ID 400, the `" Extender_0"` connect tag and the hello
+  handshake are upstream's; see reference/NETWORK.md.
+- `Ext.Net` follows upstream's API exactly: the server context has `BroadcastMessage`, `PostMessageToClient`,
+  `PostMessageToUser` and `PlayerHasExtender`, the client `PostMessageToServer`, both `IsHost` and `Version`; net
+  channels are upstream's `NetChannel`, with requests answered by reply ID.
+- Messages carry real user IDs (peer << 16 | slot, so 65537 for the host's player) instead of 1, matching a
+  character's `UserID`.
+- A host's Lua reset also resets clients on other machines, as upstream's does.
+
 ## v0.2.0 (2026-10-02)
 
 - **Native plugins.** bg3le loads shared libraries from `~/.local/share/bg3le/plugins` (or `$BG3LE_PLUGINS_DIR`)

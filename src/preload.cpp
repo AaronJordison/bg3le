@@ -46,6 +46,7 @@ extern "C" void bg3le_note_game_server(void* server);
 #include "stackdump.h"
 #include "mem.h"
 #include "log.h"
+#include "net.h"
 #include "console.h"
 
 namespace bg3le {
@@ -426,6 +427,7 @@ UpdateMessagesProc g_orig_update_messages = nullptr;
 
 void update_messages_hook(void* self) {
     bg3le_note_game_server(self);
+    net_server_tick(self);
     debug_server_note_story_thread();
     debug_server_pump();
     lua_tick();

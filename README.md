@@ -45,6 +45,12 @@ structure was found, and what was measured, is in
   reading its own entity world, as upstream has them. `Ext.Net` messages and
   synced mod and user variables cross between them; sessions and
   `Ext.Debug.Reset()` rebuild both.
+- **Multiplayer**: `Ext.Net` and synced variables travel over the game's
+  connection in bg3se's own protocol, so a bg3le host serves clients running
+  bg3se on Windows (or under Proton) and bg3le alike, and a bg3le client
+  joins either. Mods such as Mod Configuration Menu work for every player.
+  How it maps onto the Linux build:
+  [reference/NETWORK.md](reference/NETWORK.md).
 - **Upstream's Lua environment**: Norbyte's Lua fork, upstream's sandbox,
   its `Ext.Events` library, `Ext.Json`, `Ext.Math`, and `Ext.Types` over
   upstream's own type registry, including its IDE helper generator.
@@ -88,6 +94,9 @@ structure was found, and what was measured, is in
 
 - Flatpak Steam is not supported by the installer yet: its sandbox cannot
   see `~/.local/share/bg3le`.
+- Multiplayer has been tested over the game's own loopback (single player
+  with `Ext._Internal.NetForceRemote(true)`), not yet against a second
+  machine or a Windows player running bg3se. Reports welcome.
 - Two deliberate differences: a `require` after a mod has finished loading
   still works (upstream errors), and `Ext.Enums` entries are labels rather
   than `EnumValue` objects.

@@ -28,6 +28,7 @@
 #include "savegame.h"
 #include "stats_sets.h"
 #include "log.h"
+#include "net.h"
 #include "targets.h"
 #include "vendor/ls_string.h"
 #include "vendor/mods.h"
@@ -700,48 +701,67 @@ int l_has_other_context(lua_State* L) {
     return 1;
 }
 
-// Messages bound for the other context, taken on that context's own thread:
-// entering the other state from here would cross threads.
-struct NetMessage {
-    std::string channel;
-    std::string payload;
-    bool hasPayload;
-    lua_Integer user;
-    bool isChannel;
-};
+// Messages for a context, taken on that context's own thread: entering the
+// other state from here would cross threads. They come from the other
+// context in this process, or from a peer through src/net.cpp.
 std::mutex g_net_mutex;
-std::vector<NetMessage> g_to_server;
-std::vector<NetMessage> g_to_client;
+std::vector<NetInbound> g_to_server;
+std::vector<NetInbound> g_to_client;
 
+// Ext._Internal.PostToOtherContext(channel, payload, userId, module,
+//                                  requestId, replyId, binary) -> bool
 int l_post_to_other_context(lua_State* L) {
-    const char* channel = luaL_checkstring(L, 1);
-    std::size_t length = 0;
-    const char* payload = lua_tolstring(L, 2, &length);
-    const auto user = (lua_Integer)luaL_optinteger(L, 3, 1);
-    // Whether this is a NetChannel's own traffic rather than a loose
-    // message. Carried as a flag rather than as a reserved channel name: a
-    // channel name is the mod's to choose and nothing here should claim one.
-    const bool isChannel = lua_toboolean(L, 4) != 0;
-
     const bool fromClient = (L == g_client_lua);
     if ((fromClient ? g_server_lua : g_client_lua) == nullptr) {
         lua_pushboolean(L, 0);
         return 1;
     }
+    NetInbound m;
+    m.channel = luaL_checkstring(L, 1);
+    std::size_t length = 0;
+    const char* payload = lua_tolstring(L, 2, &length);
+    m.hasPayload = payload != nullptr;
+    if (payload != nullptr) m.payload.assign(payload, length);
+    m.user = luaL_optinteger(L, 3, 0);
+    if (lua_isstring(L, 4)) m.module = lua_tostring(L, 4);
+    m.requestId = (std::uint32_t)luaL_optinteger(L, 5, 0);
+    m.replyId = (std::uint32_t)luaL_optinteger(L, 6, 0);
+    m.binary = lua_toboolean(L, 7) != 0;
     {
         const std::lock_guard<std::mutex> lock(g_net_mutex);
-        (fromClient ? g_to_server : g_to_client)
-            .push_back(NetMessage{channel,
-                                  payload ? std::string(payload, length) : "",
-                                  payload != nullptr, user, isChannel});
+        (fromClient ? g_to_server : g_to_client).push_back(std::move(m));
     }
     lua_pushboolean(L, 1);
     return 1;
 }
 
-// Ext._Internal.TakeNetMessages() -> {{channel, payload, user, isChannel}, ...}
+void push_net_var(lua_State* L, NetUserVar const& v) {
+    lua_createtable(L, 0, 6);
+    lua_pushboolean(L, v.module);
+    lua_setfield(L, -2, "Module");
+    lua_pushstring(L, v.guid.c_str());
+    lua_setfield(L, -2, "Guid");
+    lua_pushlstring(L, v.key.data(), v.key.size());
+    lua_setfield(L, -2, "Key");
+    static char const* const kinds[] = {"null", "bool", "int", "double", "string", "json", "binary"};
+    lua_pushstring(L, kinds[(int)v.kind]);
+    lua_setfield(L, -2, "Kind");
+    switch (v.kind) {
+    case NetUserVar::Kind::Bool: lua_pushboolean(L, v.b); break;
+    case NetUserVar::Kind::Int: lua_pushinteger(L, (lua_Integer)v.i); break;
+    case NetUserVar::Kind::Double: lua_pushnumber(L, v.d); break;
+    case NetUserVar::Kind::String:
+    case NetUserVar::Kind::Json:
+    case NetUserVar::Kind::Binary: lua_pushlstring(L, v.s.data(), v.s.size()); break;
+    default: lua_pushnil(L); break;
+    }
+    lua_setfield(L, -2, "Value");
+}
+
+// Ext._Internal.TakeNetMessages() -> {{Kind, Channel, Payload, Module, User,
+//                                      RequestId, ReplyId, Binary, Vars}, ...}
 int l_take_net_messages(lua_State* L) {
-    std::vector<NetMessage> taken;
+    std::vector<NetInbound> taken;
     {
         const std::lock_guard<std::mutex> lock(g_net_mutex);
         taken.swap(L == g_client_lua ? g_to_client : g_to_server);
@@ -749,19 +769,37 @@ int l_take_net_messages(lua_State* L) {
     lua_createtable(L, static_cast<int>(taken.size()), 0);
     int i = 0;
     for (auto const& m : taken) {
-        lua_createtable(L, 4, 0);
-        lua_pushstring(L, m.channel.c_str());
-        lua_rawseti(L, -2, 1);
+        lua_createtable(L, 0, 9);
+        lua_pushstring(L, m.kind == NetInbound::Kind::UserVars ? "vars"
+                          : m.kind == NetInbound::Kind::ResetLua ? "reset" : "post");
+        lua_setfield(L, -2, "Kind");
+        lua_pushlstring(L, m.channel.data(), m.channel.size());
+        lua_setfield(L, -2, "Channel");
         if (m.hasPayload) {
             lua_pushlstring(L, m.payload.data(), m.payload.size());
-        } else {
-            lua_pushnil(L);
+            lua_setfield(L, -2, "Payload");
         }
-        lua_rawseti(L, -2, 2);
-        lua_pushinteger(L, m.user);
-        lua_rawseti(L, -2, 3);
-        lua_pushboolean(L, m.isChannel ? 1 : 0);
-        lua_rawseti(L, -2, 4);
+        if (!m.module.empty()) {
+            lua_pushlstring(L, m.module.data(), m.module.size());
+            lua_setfield(L, -2, "Module");
+        }
+        lua_pushinteger(L, (lua_Integer)m.user);
+        lua_setfield(L, -2, "User");
+        lua_pushinteger(L, (lua_Integer)m.requestId);
+        lua_setfield(L, -2, "RequestId");
+        lua_pushinteger(L, (lua_Integer)m.replyId);
+        lua_setfield(L, -2, "ReplyId");
+        lua_pushboolean(L, m.binary ? 1 : 0);
+        lua_setfield(L, -2, "Binary");
+        if (!m.vars.empty()) {
+            lua_createtable(L, (int)m.vars.size(), 0);
+            int j = 0;
+            for (auto const& v : m.vars) {
+                push_net_var(L, v);
+                lua_rawseti(L, -2, ++j);
+            }
+            lua_setfield(L, -2, "Vars");
+        }
         lua_rawseti(L, -2, ++i);
     }
     return 1;
@@ -7403,6 +7441,14 @@ void register_log(lua_State* L, const char* name, int severity) {
 
 }  // namespace
 
+// A message for a context, from a peer (src/net.cpp); drained on its tick.
+void lua_net_deliver(bool server, NetInbound message) {
+    const std::lock_guard<std::mutex> lock(g_net_mutex);
+    (server ? g_to_server : g_to_client).push_back(std::move(message));
+}
+
+bool lua_state_is_client(lua_State* L) { return L != nullptr && L == g_client_lua; }
+
 void build_state(bool client);
 
 // Upstream's SandboxStartup.lua, then what upstream never opens: io, os,
@@ -7624,6 +7670,14 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "HasOtherContext");
     lua_pushcfunction(g_lua, l_request_reset);
     lua_setfield(g_lua, -2, "RequestReset");
+    lua_pushcfunction(g_lua, l_net_info);
+    lua_setfield(g_lua, -2, "NetInfo");
+    lua_pushcfunction(g_lua, l_net_post);
+    lua_setfield(g_lua, -2, "NetPost");
+    lua_pushcfunction(g_lua, l_net_sync_vars);
+    lua_setfield(g_lua, -2, "NetSyncVars");
+    lua_pushcfunction(g_lua, l_net_force_remote);
+    lua_setfield(g_lua, -2, "NetForceRemote");
     lua_pushcfunction(g_lua, l_inject_key);
     lua_setfield(g_lua, -2, "InjectKey");
     lua_pushcfunction(g_lua, l_audio);
@@ -9629,6 +9683,26 @@ do
     return any
   end
 
+  -- To peers on other machines too, as bg3se's MsgUserVars: a server's go to
+  -- every client with the extender, a client's to a host on another machine.
+  -- Tables travel in the binary serializer's form, as upstream sends them.
+  local function sync_remote(payload)
+    if Ext.IsClient() and Ext._Internal.NetInfo().Hosting then return end
+    local vars = {}
+    local function add(module, guid, entries)
+      for key, box in pairs(entries) do
+        local value = box.V
+        if type(value) == "table" then
+          value = {Binary = Ext.Json.Stringify(value, {Binary = true})}
+        end
+        vars[#vars + 1] = {Module = module, Guid = guid, Key = key, Value = value}
+      end
+    end
+    for uuid, entries in pairs(payload.Mod) do add(true, uuid, entries) end
+    for guid, entries in pairs(payload.User) do add(false, guid, entries) end
+    if #vars > 0 then Ext._Internal.NetSyncVars(vars) end
+  end
+
   local function flush(mod, user, onTick)
     local payload = {Mod = {}, User = {}}
     local any = false
@@ -9641,7 +9715,8 @@ do
                  function(guid) return user_variables[guid] end, onTick, payload.User) or any
     end
     if any then
-      Ext._Internal.PostToOtherContext(CHANNEL, Ext.Json.Stringify(payload), 1)
+      Ext._Internal.PostToOtherContext(CHANNEL, Ext.Json.Stringify(payload), 0)
+      sync_remote(payload)
     end
   end
 
@@ -9661,6 +9736,43 @@ do
     for guid, entries in pairs(data.User or {}) do
       user_variables[guid] = user_variables[guid] or {}
       for key, box in pairs(entries) do user_variables[guid][key] = box.V end
+    end
+  end
+
+  -- What a peer on another machine synced: upstream's NetworkSync, which
+  -- takes only registered variables synced in this direction, and has the
+  -- server pass a client's change on to the other clients.
+  function Ext._Internal.ApplyNetVars(vars)
+    local server = Ext.IsServer()
+    for _, v in ipairs(vars) do
+      local defs = v.Module and mod_variable_defs[v.Guid] or (not v.Module and user_variable_defs) or nil
+      if defs == nil or defs[v.Key] == nil then
+        Ext.Log.PrintError("Tried to sync variable '" .. tostring(v.Key) .. "' that has no prototype!")
+        goto continue
+      end
+      if not option(defs, v.Key, server and "SyncToServer" or "SyncToClient") then
+        Ext.Log.PrintError("Tried to sync variable '" .. tostring(v.Key) .. "' in illegal direction!")
+        goto continue
+      end
+      local value = v.Value
+      if v.Kind == "json" then
+        local ok, parsed = pcall(Ext.Json.Parse, value)
+        value = ok and parsed or nil
+      elseif v.Kind == "binary" then
+        local ok, parsed = pcall(Ext.Json.Parse, value, true)
+        value = ok and parsed or nil
+      elseif v.Kind == "null" then
+        value = nil
+      end
+      local store = v.Module and mod_variables or user_variables
+      store[v.Guid] = store[v.Guid] or {}
+      store[v.Guid][v.Key] = value
+      if server and option(defs, v.Key, "SyncToClient") then
+        local dirty = v.Module and dirty_mod or dirty_user
+        dirty[v.Guid] = dirty[v.Guid] or {}
+        dirty[v.Guid][v.Key] = true
+      end
+      ::continue::
     end
   end
 
@@ -9766,247 +9878,167 @@ end
 
 -- ---- Ext.Net ----
 --
--- Upstream's messages ride the game's connection as protobuf, because on
--- Windows the two contexts may be two machines. Single-player is one
--- process either way, and bg3le runs both Lua states in it, so a message
--- crosses by being queued in the other state -- see
--- Ext._Internal.PostToOtherContext. What a mod sees is the same: it sends
--- from one side and the handler runs on the other, a tick later.
---
--- bg3le is always the host, so there is exactly one peer and it is user 1.
+-- Upstream's (Lua/Libs/ServerNet.inl, ClientNet.inl, Net.inl, and the
+-- NetChannel and NetworkManager libraries). A message for this process's
+-- other context is queued there directly, as upstream's local message
+-- passing does; one for another machine goes over the game's connection in
+-- bg3se's own format (src/net.cpp), so bg3le and Windows players running
+-- bg3se talk to each other. Either way it is handled on the receiver's next
+-- tick.
 Ext.Net = {}
+
+do
 
 local net_listeners = {}
 local warned_net_listener = {}
 
--- Messages that arrived from the other context, drained on the next tick.
+-- Messages that arrived, drained on the next tick.
 local net_inbox = {}
 
-local kHostUserId = 1
+-- Upstream's NetworkRequestSystem: the callbacks for requests this state
+-- sent, by the ID their replies come back under.
+local net_requests = {}
+local net_next_request = 1
 
-function Ext.Net.IsHost() return true end
-
--- The network protocol version, as upstream's: 2 is the binary serializer
--- (net::ProtoVersion::VerBinSerializer), which every peer here has.
-function Ext.Net.Version() return 2 end
-
-function Ext.Net.PlayerHasExtender(_)
-  -- True for the host, which is the only peer that exists here.
-  return true
+local function net_request(handler)
+  if handler == nil then return 0 end
+  local id = net_next_request
+  net_next_request = net_next_request + 1
+  net_requests[id] = handler
+  return id
 end
 
--- Called in the *receiving* context, as its tick takes what the other posted.
-function Ext._Internal.QueueNetMessage(channel, payload, userId, isChannel)
-  net_inbox[#net_inbox + 1] = {channel, payload, userId or kHostUserId,
-                               isChannel == true}
+-- Upstream takes a string; a table is serialized rather than refused.
+local function net_payload(payload)
+  if type(payload) == "table" then return Ext.Json.Stringify(payload) end
+  if payload ~= nil and type(payload) ~= "string" then return tostring(payload) end
+  return payload
 end
 
--- Drained by the tick, before timers, so a message posted on one tick is
--- handled on the next rather than whenever a handler happens to run.
-function Ext._Internal.DrainNetMessages()
-  for _, m in ipairs(Ext._Internal.TakeNetMessages()) do
-    Ext._Internal.QueueNetMessage(m[1], m[2], m[3], m[4])
-  end
-  if #net_inbox == 0 then return end
-
-  -- Taken whole first: a handler may send, and that must land on the next
-  -- drain rather than extend this one.
-  local batch = net_inbox
-  net_inbox = {}
-
-  for _, message in ipairs(batch) do
-    local channel, payload, user = message[1], message[2], message[3]
-    if message[4] then
-      local ok, wrapper = pcall(Ext.Json.Parse, payload)
-      if ok and type(wrapper) == "table" then
-        Ext._Internal.DeliverChannel(wrapper.Key, wrapper.Payload, user,
-                                     wrapper.RequestId, wrapper.IsResponse)
-      else
-        Ext.Log.PrintError("bg3le: a net channel message did not parse: "
-                           .. tostring(wrapper))
-      end
-    elseif Ext._Internal.IsVarChannel(channel) then
-      Ext._Internal.ApplyVarSync(payload)
-    else
-      Ext._Internal.FireNetMessage(channel, payload, user)
-      Ext._Internal.FireEvent("NetMessage", {Channel = channel,
-                                             Payload = payload, UserID = user})
-    end
-  end
-end
-
-local function post_across(name, channel, payload, userId)
+local function net_check(name, channel)
   if type(channel) ~= "string" then
     error("Ext.Net." .. name .. " takes a channel name", 3)
   end
-  -- Upstream serialises a table; a string goes as it is.
-  if type(payload) == "table" then payload = Ext.Json.Stringify(payload) end
-  if payload ~= nil and type(payload) ~= "string" then
-    payload = tostring(payload)
+end
+
+local function peer_of(user) return user >> 16 end
+
+-- Ext.IsServer is defined further down; the state already knows which it is.
+if not Ext._Internal.IsClientState() then
+  -- A character's user: its ServerCharacter's UserID, as upstream reads it.
+  local function character_user(character)
+    if character == nil then return nil end
+    local ok, user = pcall(function()
+      return Ext.Entity.Get(character).ServerCharacter.UserID
+    end)
+    if ok and type(user) == "number" then return user end
+    if Osi ~= nil and Osi.GetReservedUserID ~= nil then
+      ok, user = pcall(Osi.GetReservedUserID, character)
+      if ok and type(user) == "number" then return user end
+    end
+    return nil
   end
 
-  if not Ext._Internal.PostToOtherContext(channel, payload,
-                                          userId or kHostUserId) then
-    -- One context and nowhere to send is not an error: a mod that talks to
-    -- itself over a channel still works, which is what the local listeners
-    -- are for.
-    Ext._Internal.FireNetMessage(channel, payload, userId or kHostUserId)
+  local function post_to_user(user, channel, payload, module, handler, replyId, binary)
+    local info = Ext._Internal.NetInfo()
+    local requestId = net_request(handler)
+    payload = net_payload(payload)
+    if peer_of(user) == info.LocalPeer then
+      Ext._Internal.PostToOtherContext(channel, payload, user, module, requestId,
+                                       replyId, binary)
+      return
+    end
+    local ok, err = Ext._Internal.NetPost(user, channel, payload, module, requestId,
+                                          replyId, binary)
+    if not ok then Ext.Log.PrintError(err) end
   end
-  return true
-end
 
-function Ext.Net.BroadcastMessage(channel, payload)
-  return post_across("BroadcastMessage", channel, payload, kHostUserId)
-end
+  function Ext.Net.BroadcastMessage(channel, payload, excludeCharacter, module,
+                                    requestHandler, replyId, binary)
+    net_check("BroadcastMessage", channel)
+    local info = Ext._Internal.NetInfo()
+    local exclude = character_user(excludeCharacter)
+    local requestId = net_request(requestHandler)
+    payload = net_payload(payload)
+    if exclude == nil or peer_of(exclude) ~= info.LocalPeer then
+      Ext._Internal.PostToOtherContext(channel, payload, info.ReservedUser, module,
+                                       requestId, replyId, binary)
+    end
+    Ext._Internal.NetPost("broadcast", channel, payload, module, requestId, replyId,
+                          binary, exclude)
+  end
 
-function Ext.Net.PostMessageToClient(_, channel, payload)
-  return post_across("PostMessageToClient", channel, payload, kHostUserId)
-end
+  function Ext.Net.PostMessageToClient(character, channel, payload, module,
+                                       requestHandler, replyId, binary)
+    net_check("PostMessageToClient", channel)
+    local user = character_user(character)
+    if user == nil then return end
+    if user == Ext._Internal.NetInfo().ReservedUser then
+      Ext.Log.PrintError("Attempted to send message to character " .. tostring(character)
+                         .. " on channel '" .. channel .. "' that has no user assigned!")
+      return
+    end
+    post_to_user(user, channel, payload, module, requestHandler, replyId, binary)
+  end
 
-function Ext.Net.PostMessageToUser(userId, channel, payload)
-  return post_across("PostMessageToUser", channel, payload, userId)
-end
+  function Ext.Net.PostMessageToUser(userId, channel, payload, module,
+                                     requestHandler, replyId, binary)
+    net_check("PostMessageToUser", channel)
+    if type(userId) ~= "number" then
+      error("Ext.Net.PostMessageToUser takes a user ID", 2)
+    end
+    if userId == Ext._Internal.NetInfo().ReservedUser then
+      Ext.Log.PrintError("Attempted to send message on channel '" .. channel
+                         .. "' to reserved user ID!")
+      return
+    end
+    post_to_user(math.tointeger(userId) or userId, channel, payload, module,
+                 requestHandler, replyId, binary)
+  end
 
-function Ext.Net.PostMessageToServer(channel, payload)
-  return post_across("PostMessageToServer", channel, payload, kHostUserId)
+  function Ext.Net.PlayerHasExtender(character)
+    local user = character_user(character)
+    local info = Ext._Internal.NetInfo()
+    if user == nil or user == info.ReservedUser then return nil end
+    local peer = peer_of(user)
+    return peer == info.LocalPeer or info.Peers[peer] ~= nil
+  end
+
+  -- Kinda pointless on the server, as upstream says, but kept for symmetry.
+  function Ext.Net.IsHost() return true end
+  function Ext.Net.Version() return Ext._Internal.NetInfo().Version end
+else
+  function Ext.Net.PostMessageToServer(channel, payload, module, requestHandler,
+                                       replyId, binary)
+    net_check("PostMessageToServer", channel)
+    local info = Ext._Internal.NetInfo()
+    local requestId = net_request(requestHandler)
+    payload = net_payload(payload)
+    -- To this process's own server; or to the host, if it has the extender;
+    -- or, with no host yet, queued for the server context here.
+    if info.Hosting or (not info.HostHasExtender and not info.Connected) then
+      Ext._Internal.PostToOtherContext(channel, payload, info.LocalUser, module,
+                                       requestId, replyId, binary)
+      return
+    end
+    local ok, err = Ext._Internal.NetPost(nil, channel, payload, module, requestId,
+                                          replyId, binary)
+    if not ok then Ext.Log.PrintError(err) end
+  end
+
+  function Ext.Net.IsHost() return Ext._Internal.NetInfo().Hosting end
+  function Ext.Net.Version() return Ext._Internal.NetInfo().Version end
 end
 
 -- ---- net channels ----
 --
--- Upstream's NetChannel object, the modern replacement for
--- RegisterNetListener: Ext.Net.CreateChannel(module, channel) returns a
--- handle with SetHandler/SetRequestHandler and the send half.
---
--- Everything is delivered in this state. bg3le is the host and runs one
--- Lua context, so a message "to the server" and a message "to a client"
--- both arrive here; the alternative is a mod that quietly does nothing.
--- Delivery is deferred to the next tick, as a real one would be, so a
--- send cannot re-enter the sender.
+-- Upstream's NetChannel and NetworkManager: the payload is serialized with
+-- Ext.Json (binary from protocol version 2), sent with the mod's UUID as its
+-- module, and a request's reply comes back under the request's ID.
 local net_channels = {}
 
 local NetChannel = {}
 NetChannel.__index = NetChannel
-
--- The host is user 1, the only peer there is.
-local kHostUser = 1
-
--- A channel's traffic rides the same crossing the loose messages do, marked
--- as a channel message rather than under a reserved channel name, and
--- carrying the module, the channel and -- for a request -- the id the reply
--- comes back under.
-local next_request_id = 0
-local pending_requests = {}
-
-local function channel_key(self)
-  return self.Module .. "/" .. self.Channel
-end
-
-local function channel_post(self, payload, user, requestId, response)
-  Ext._Internal.PostToOtherContext(
-    self.Channel,
-    Ext.Json.Stringify({
-      Key = channel_key(self),
-      Payload = payload,
-      RequestId = requestId,
-      IsResponse = response == true,
-    }),
-    user or kHostUser, true)
-end
-
--- One context and nowhere to send: a mod that talks to itself over a
--- channel still works, which is what this falls back to.
-local function channel_local(self, payload, user, requestId, response)
-  -- A copy, as upstream's receiver parses its own from the wire.
-  payload = Ext.Json.Parse(Ext.Json.Stringify(payload))
-  Ext.OnNextTick(function()
-    Ext._Internal.DeliverChannel(channel_key(self), payload,
-                                 user or kHostUser, requestId, response)
-  end)
-end
-
-local function channel_send(self, payload, user)
-  if not Ext._Internal.HasOtherContext() then
-    return channel_local(self, payload, user, nil, false)
-  end
-  channel_post(self, payload, user, nil, false)
-end
-
-local function channel_request(self, payload, user, callback)
-  next_request_id = next_request_id + 1
-  local id = next_request_id
-  if callback ~= nil then pending_requests[id] = callback end
-
-  if not Ext._Internal.HasOtherContext() then
-    return channel_local(self, payload, user, id, false)
-  end
-  channel_post(self, payload, user, id, false)
-end
-
--- Delivered in the receiving context: a message runs the handler, a request
--- runs the request handler and posts the answer back under the same id, and
--- a response completes the caller's callback.
-function Ext._Internal.DeliverChannel(key, payload, user, requestId,
-                                      isResponse)
-  if isResponse then
-    local callback = pending_requests[requestId]
-    pending_requests[requestId] = nil
-    if callback ~= nil then
-      local ok, err = xpcall(callback, debug.traceback, payload)
-      if not ok then
-        Ext.Log.PrintError("Error while dispatching user function call: "
-                           .. tostring(err))
-      end
-    end
-    return
-  end
-
-  -- Upstream's warnings and messages, from NetworkManager and NetChannel.
-  local self = net_channels[key]
-  if self == nil then
-    local module, channel = key:match("^([^/]*)/(.*)$")
-    Ext.Log.PrintWarning("Net message received for module "
-      .. tostring(module) .. ", channel " .. tostring(channel)
-      .. ", but no such channel was registered!")
-    return
-  end
-
-  if requestId ~= nil then
-    if self.RequestHandler == nil then
-      Ext.Log.PrintWarning("Net request received for module " .. self.Module
-        .. ", channel " .. self.Channel
-        .. ", but no request handler was registered!")
-      return
-    end
-    local ok, response = xpcall(self.RequestHandler, debug.traceback,
-                                payload, user)
-    if not ok then
-      Ext.Log.PrintError("Error during request dispatch for module "
-        .. self.Module .. ", channel " .. self.Channel .. ": "
-        .. tostring(response))
-      return
-    end
-    if Ext._Internal.HasOtherContext() then
-      channel_post(self, response, user, requestId, true)
-    else
-      Ext.OnNextTick(function()
-        Ext._Internal.DeliverChannel(key, response, user, requestId, true)
-      end)
-    end
-    return
-  end
-
-  if self.MessageHandler == nil then
-    Ext.Log.PrintWarning("Net message received for module " .. self.Module
-      .. ", channel " .. self.Channel
-      .. ", but no message handler was registered!")
-    return
-  end
-  local ok, err = xpcall(self.MessageHandler, debug.traceback, payload, user)
-  if not ok then
-    Ext.Log.PrintError("Error during message dispatch for module "
-      .. self.Module .. ", channel " .. self.Channel .. ": " .. tostring(err))
-  end
-end
 
 function NetChannel:SetHandler(handler) self.MessageHandler = handler end
 function NetChannel:SetRequestHandler(handler) self.RequestHandler = handler end
@@ -10017,45 +10049,94 @@ function NetChannel:Stringify(message)
   return Ext.Json.Stringify(message, {Binary = self:IsBinary()})
 end
 
--- Every client but the excluded character's; the host's is the only one.
-function NetChannel:Broadcast(payload, excludeCharacter)
-  if excludeCharacter ~= nil and Osi.GetHostCharacter
-     and excludeCharacter == Osi.GetHostCharacter() then
-    return
+function NetChannel:DoSendToServer(message, handler)
+  Ext.Net.PostMessageToServer(self.Channel, self:Stringify(message), self.Module,
+                              handler, nil, self:IsBinary())
+end
+
+function NetChannel:SendToServer(message) self:DoSendToServer(message, nil) end
+
+function NetChannel:RequestToServer(message, handler)
+  self:DoSendToServer(message, function(reply, binary)
+    handler(Ext.Json.Parse(reply, binary))
+  end)
+end
+
+function NetChannel:DoSendToClient(message, user, handler)
+  local msg = self:Stringify(message)
+  if type(user) == "number" then
+    Ext.Net.PostMessageToUser(user, self.Channel, msg, self.Module, handler, nil,
+                              self:IsBinary())
+  else
+    Ext.Net.PostMessageToClient(user, self.Channel, msg, self.Module, handler, nil,
+                                self:IsBinary())
   end
-  channel_send(self, payload, nil)
-end
-function NetChannel:SendToServer(payload) channel_send(self, payload, nil) end
-
-function NetChannel:SendToClient(payload, user)
-  channel_send(self, payload, user)
 end
 
-function NetChannel:SendToUser(payload, user)
-  channel_send(self, payload, user)
+function NetChannel:SendToClient(message, user) self:DoSendToClient(message, user, nil) end
+-- Not upstream's; earlier bg3le had it, and a mod may use it.
+NetChannel.SendToUser = NetChannel.SendToClient
+
+function NetChannel:RequestToClient(message, user, handler)
+  self:DoSendToClient(message, user, function(reply, binary)
+    handler(Ext.Json.Parse(reply, binary))
+  end)
 end
 
-function NetChannel:RequestToServer(payload, callback)
-  channel_request(self, payload, nil, callback)
+function NetChannel:Broadcast(message, excludeCharacter)
+  Ext.Net.BroadcastMessage(self.Channel, self:Stringify(message), excludeCharacter,
+                           self.Module, nil, nil, self:IsBinary())
 end
 
-function NetChannel:RequestToClient(payload, user, callback)
-  channel_request(self, payload, user, callback)
+function NetChannel:OnMessage(e)
+  local request = Ext.Json.Parse(e.Payload, e.Binary)
+  if e.RequestId then
+    if self.RequestHandler then
+      local ok, ret = xpcall(self.RequestHandler, debug.traceback, request, e.UserID)
+      if ok then
+        local reply = self:Stringify(ret)
+        if Ext.IsServer() then
+          Ext.Net.PostMessageToUser(e.UserID, e.Channel, reply, e.Module, nil,
+                                    e.RequestId, self:IsBinary())
+        else
+          Ext.Net.PostMessageToServer(e.Channel, reply, e.Module, nil, e.RequestId,
+                                      self:IsBinary())
+        end
+      else
+        Ext.Log.PrintError("Error during request dispatch for module " .. e.Module
+                           .. ", channel " .. e.Channel .. ": " .. tostring(ret))
+      end
+    else
+      Ext.Log.PrintWarning("Net request received for module " .. e.Module
+                           .. ", channel " .. e.Channel
+                           .. ", but no request handler was registered!")
+    end
+  else
+    if self.MessageHandler then
+      local ok, err = xpcall(self.MessageHandler, debug.traceback, request, e.UserID)
+      if not ok then
+        Ext.Log.PrintError("Error during message dispatch for module " .. e.Module
+                           .. ", channel " .. e.Channel .. ": " .. tostring(err))
+      end
+    else
+      Ext.Log.PrintWarning("Net message received for module " .. e.Module
+                           .. ", channel " .. e.Channel
+                           .. ", but no message handler was registered!")
+    end
+  end
 end
 
-function Ext.Net.CreateChannel(module, channel, messageHandler,
-                              requestHandler)
+function Ext.Net.CreateChannel(module, channel, messageHandler, requestHandler)
   if type(module) ~= "string" or type(channel) ~= "string" then
     error("Ext.Net.CreateChannel(module, channel[, messageHandler"
           .. "[, requestHandler]])", 2)
   end
-
-  -- One object per (module, channel), so both halves of a mod that create
-  -- the same channel share a handler rather than shadowing one another.
+  -- One object per (module, channel) in a context; creating it again hands
+  -- back the same one rather than refusing as upstream does.
   local key = module .. "/" .. channel
   local made = net_channels[key]
   if made == nil then
-    made = setmetatable({ Module = module, Channel = channel }, NetChannel)
+    made = setmetatable({Module = module, Channel = channel}, NetChannel)
     net_channels[key] = made
   end
   -- As upstream's CreateChannel, which assigns both unconditionally.
@@ -10064,18 +10145,24 @@ function Ext.Net.CreateChannel(module, channel, messageHandler,
   return made
 end
 
--- Registered listeners are kept and dispatched locally, so a mod that
--- talks to itself over a channel still works.
+-- NetworkManager:MessageReceived.
+local function net_channel_message(e)
+  local channel = net_channels[e.Module .. "/" .. e.Channel]
+  if channel == nil then
+    Ext.Log.PrintWarning("Net message received for module " .. e.Module .. ", channel "
+                         .. e.Channel .. ", but no such channel was registered!")
+    return
+  end
+  channel:OnMessage(e)
+end
+
 function Ext.RegisterNetListener(channel, handler)
-  -- Upstream says the same thing, once per channel: the NetChannel object
-  -- replaced this.
+  -- Upstream says the same thing: the NetChannel object replaced this.
   if not warned_net_listener[channel] then
     warned_net_listener[channel] = true
-    Ext.Log.Print(string.format(
-      "Ext.RegisterNetListener(%s) is deprecated; consider using "
-      .. "Ext.Net.CreateChannel() instead", tostring(channel)))
+    Ext.Log.PrintWarning("Ext.RegisterNetListener(" .. tostring(channel)
+                         .. ") is deprecated; consider using Ext.Net.CreateChannel() instead")
   end
-
   net_listeners[channel] = net_listeners[channel] or {}
   table.insert(net_listeners[channel], handler)
 end
@@ -10084,9 +10171,71 @@ function Ext._Internal.FireNetMessage(channel, payload, userId)
   for _, handler in ipairs(net_listeners[channel] or {}) do
     local ok, err = xpcall(handler, debug.traceback, channel, payload, userId)
     if not ok then
-      Ext.Log.PrintError("Error during NetMessage dispatch: ", err)
+      Ext.Log.PrintError("Error during NetMessage dispatch: " .. tostring(err))
     end
   end
+end
+
+-- Upstream's State::OnNetMessageReceived.
+local function net_receive(m)
+  if m.ReplyId ~= 0 then
+    local callback = net_requests[m.ReplyId]
+    net_requests[m.ReplyId] = nil
+    if callback == nil then
+      Ext.Log.PrintWarning("No handler found for net message request id " .. m.ReplyId)
+      return
+    end
+    local ok, err = xpcall(callback, debug.traceback, m.Payload, m.Binary)
+    if not ok then
+      Ext.Log.PrintError("Error while dispatching user function call: " .. tostring(err))
+    end
+    return
+  end
+
+  local e = {
+    Channel = m.Channel,
+    Payload = m.Payload,
+    Module = m.Module,
+    RequestId = m.RequestId ~= 0 and m.RequestId or nil,
+    UserID = m.User,
+    Binary = m.Binary,
+  }
+  if e.RequestId == nil and e.Module == nil then
+    -- Only legacy messages go through the old NetMessage event.
+    Ext._Internal.FireNetMessage(e.Channel, e.Payload, e.UserID)
+    Ext._Internal.FireEvent("NetMessage", e)
+  else
+    if e.Module ~= nil then net_channel_message(e) end
+    Ext._Internal.FireEvent("NetModMessage", e)
+  end
+end
+
+-- Drained by the tick, before timers, so a message posted on one tick is
+-- handled on the next rather than whenever a handler happens to run.
+function Ext._Internal.DrainNetMessages()
+  for _, m in ipairs(Ext._Internal.TakeNetMessages()) do
+    net_inbox[#net_inbox + 1] = m
+  end
+  if #net_inbox == 0 then return end
+
+  -- Taken whole first: a handler may send, and that must land on the next
+  -- drain rather than extend this one.
+  local batch = net_inbox
+  net_inbox = {}
+
+  for _, m in ipairs(batch) do
+    if m.Kind == "vars" then
+      Ext._Internal.ApplyNetVars(m.Vars or {})
+    elseif m.Kind == "reset" then
+      Ext.Log.Print("bg3le: the host reset its Lua; resetting this client's")
+      Ext._Internal.RequestReset()
+    elseif Ext._Internal.IsVarChannel(m.Channel) then
+      Ext._Internal.ApplyVarSync(m.Payload)
+    else
+      net_receive(m)
+    end
+  end
+end
 end
 
 -- ---- top level ----
@@ -16014,6 +16163,8 @@ void lua_tick() {
     if (g_reset_pending) {
         g_reset_pending = false;
         lua_reset(true);
+        // Upstream's RequestResetClientLuaState: clients on other machines too.
+        net_reset_remote_clients();
     }
     if (g_server_lua == nullptr) return;
 

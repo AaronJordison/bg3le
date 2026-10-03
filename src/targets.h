@@ -106,6 +106,14 @@ std::uintptr_t BoostInvoke();
 std::uintptr_t BoostCopy();
 // its manager
 std::uintptr_t BoostManage();
+// net::MessageFactory::GetFreeMessage(factory, id)
+std::uintptr_t NetGetFreeMessage();
+// net::MessageFactory::Register(factory, id, template, growSize, name)
+std::uintptr_t NetRegisterMessage();
+// net::AbstractPeer::SendMessageSinglePeer, the peers' vtable slot 25
+std::uintptr_t NetSendSinglePeer();
+// Array<net::Protocol*>::reserve, as the peers grow their protocol lists
+std::uintptr_t NetProtocolsReserve();
 // the inlined ThreadRegistry index read (mov r14d, fs:disp32), anchored on its function
 std::uintptr_t ThreadIndexRead();
 

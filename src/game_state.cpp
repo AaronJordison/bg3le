@@ -21,6 +21,7 @@
 #include "resolve.h"
 #include "lua_host.h"
 #include "mem.h"
+#include "net.h"
 #include "stackdump.h"
 #include "targets.h"
 
@@ -106,6 +107,7 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
     static std::atomic<bool> first{true};
     if (first.exchange(false)) logf("gamestate: client frames are ticking");
     const std::uint64_t result = g_machine_update(machine, a, b, c);
+    net_client_tick();
 
     static char const* last = nullptr;
     char const* now = client_game_state();

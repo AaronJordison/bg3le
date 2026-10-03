@@ -349,6 +349,7 @@ add_library(bg3le SHARED
     src/ext_libs.cpp
     src/builtin_lua.cpp
     src/plugins.cpp
+    src/net.cpp
     # Yann Collet's LZ4, vendored rather than linked: the sniper container
     # need not have liblz4, and a missing DT_NEEDED would stop bg3le loading
     # at all. See vendor/NOTICE.md.

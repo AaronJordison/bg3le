@@ -1,4 +1,4 @@
-// The sliver of protobuf the LuaDebug protocol needs.
+// The sliver of protobuf the LuaDebug and extender protocols need.
 #pragma once
 
 #include <cstdint>
@@ -68,6 +68,14 @@ public:
         if (static_cast<std::uint64_t>(end_ - p_) < len) return false;
         out->assign(p_, static_cast<std::size_t>(len));
         p_ += len;
+        return true;
+    }
+
+    // A fixed32 or fixed64 field's raw bytes.
+    bool read_fixed(std::string* out, std::size_t n) {
+        if (static_cast<std::size_t>(end_ - p_) < n) return false;
+        out->assign(p_, n);
+        p_ += n;
         return true;
     }
 

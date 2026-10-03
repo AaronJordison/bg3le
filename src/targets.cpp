@@ -140,6 +140,14 @@ BG3LE_TARGET(BoostCopy,
              resolve_code(Sig{"BoostCopy", 0x5e76670, "0f 10 46 18 48 89 d0 0f 11 42 18 0f 10 06 0f 11 02 48 8b 4e 10 48 89 4a 10 c3 cc cc cc cc cc cc 48 89 d0 48 85 d2 75 01 c3 0f 10 46 18 0f 11 40 18 0f 10 06 0f 11 00 48 8b 4e 10 48 89 48 10 eb e7 cc cc cc cc cc cc cc cc cc cc cc cc cc cc cc 55 41 57 41 56 41 55 41 54 53 48 83 ec 48 8b 42 0c"}))
 BG3LE_TARGET(BoostManage,
              resolve_code(Sig{"BoostManage", 0x5e76690, "48 89 d0 48 85 d2 75 01 c3 0f 10 46 18 0f 11 40 18 0f 10 06 0f 11 00 48 8b 4e 10 48 89 48 10 eb e7 cc cc cc cc cc cc cc cc cc cc cc cc cc cc cc 55 41 57 41 56 41 55 41 54 53 48 83 ec 48 8b 42 0c"}))
+BG3LE_TARGET(NetGetFreeMessage,
+             resolve_code(Sig{"NetGetFreeMessage", 0x2380220, "55 41 57 41 56 41 55 41 54 53 50 48 8b 4f 08 48 63 c6 4c 8b 2c c1 4d 85 ed 0f 84 ?? ?? ?? ?? 4c 8d 77 20 48 89 fb 4c 89 f7"}))
+BG3LE_TARGET(NetRegisterMessage,
+             resolve_code(Sig{"NetRegisterMessage", 0x3ce78f0, "55 41 57 41 56 41 55 41 54 53 48 83 ec 28 49 89 fe bf 38 00 00 00"}))
+BG3LE_TARGET(NetSendSinglePeer,
+             resolve_code(Sig{"NetSendSinglePeer", 0x2b0636d, "cc cc cc 55 41 57 41 56 53 50 f0 ff 87 38 01 00 00", 3}))
+BG3LE_TARGET(NetProtocolsReserve,
+             resolve_code(Sig{"NetProtocolsReserve", 0x40cbf8f, "e9 ?? ?? ?? ?? cc cc cc cc cc cc cc cc cc cc cc cc 8b 47 08 48 39 f0 73 66", 17}))
 BG3LE_TARGET(ThreadIndexRead,
              resolve_code(Sig{"ThreadIndexRead", 0x2b824e7, "e9 ?? ?? ?? ?? cc cc cc cc cc cc 55 41 57 41 56 41 55 41 54 53 50 83 ff ff", 66}))
 
