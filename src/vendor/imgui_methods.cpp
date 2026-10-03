@@ -327,6 +327,11 @@ bool imgui_call_method(Renderable* object, char const* name,
         object->Destroy();
         return true;
     }
+    // ParentElement, upstream's P_GETTER over GetParent: nil for a window.
+    if (BG3LE_IS("GetParentElement")) {
+        if (object->Parent != InvalidHandle) give_handle(out, object->GetParent());
+        return true;
+    }
 
     auto* styled = dynamic_cast<StyledRenderable*>(object);
     if (styled != nullptr) {
@@ -358,6 +363,15 @@ bool imgui_call_method(Renderable* object, char const* name,
         }
         if (BG3LE_IS("Activate")) {
             styled->Activate();
+            return true;
+        }
+        // DragDropType is a getter/setter pair upstream, like InputText.Text.
+        if (BG3LE_IS("GetDragDropType")) {
+            give_text(out, STDString(styled->DragDropType.GetStringView()));
+            return true;
+        }
+        if (BG3LE_IS("SetDragDropType")) {
+            styled->DragDropType = bg3se::FixedString(as_text(args, count, 0));
             return true;
         }
         if (BG3LE_IS("Tooltip")) {

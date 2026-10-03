@@ -94,6 +94,10 @@ structure was found, and what was measured, is in
 
 - Flatpak Steam is not supported by the installer yet: its sandbox cannot
   see `~/.local/share/bg3le`.
+- Some object methods and getters upstream declares as code rather than
+  fields are not implemented yet (Noesis hit testing, visual transforms,
+  several system methods); none was used by the mods checked. The list:
+  [reference/COMPUTED-MEMBERS.md](reference/COMPUTED-MEMBERS.md).
 - Multiplayer has been tested over the game's own loopback (single player
   with `Ext._Internal.NetForceRemote(true)`), not yet against a second
   machine or a Windows player running bg3se. Reports welcome.

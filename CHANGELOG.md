@@ -25,6 +25,12 @@
 - Fixed nested objects in `Ext.StaticData` resources whose type name is also a component's, such as `Origin`:
   they were typed from the component, so `Origin.DisplayName` had no `Get()` (Armory's preset activation stopped
   there).
+- Added `Ext.System` (upstream's SystemMap: `Ext.System.ClientVisual` and the rest, as views of the live systems),
+  `Ext.CoreLib(name)`, `ServerCharacter:GetStatus`, the deprecated `ServerCharacter.Character` and
+  `ServerItem.Item`, templates' `TemplateStorageType`, and ImGui's `DragDropType` and `ParentElement`: members
+  upstream declares as code rather than fields, which bg3le's tables leave out. What is still missing is listed in
+  reference/COMPUTED-MEMBERS.md.
+- tools/check-surface.sh checks the whole captured `Ext` surface, not only its functions.
 
 ## v0.2.0 (2026-10-02)
 

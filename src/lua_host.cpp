@@ -6907,6 +6907,14 @@ constexpr SystemName kSystemNames[] = {
 #include "vendor/system_names.inc"
 };
 
+// The engine class a bg3se system label names, or the name itself.
+char const* system_class(char const* name) {
+    for (auto const& known : kSystemNames) {
+        if (std::strcmp(known.Label, name) == 0) return known.Engine;
+    }
+    return name;
+}
+
 // A system's index, by bg3se's label or the engine's own name.
 std::optional<std::int32_t> system_index(char const* name) {
     char const* engine = name;
@@ -7015,6 +7023,8 @@ int l_system_probe(lua_State* L) {
     lua_setfield(L, -2, "Count");
     lua_pushboolean(L, ok);
     lua_setfield(L, -2, "Ok");
+    lua_pushstring(L, system_class(luaL_checkstring(L, 1)));
+    lua_setfield(L, -2, "Class");
     return 1;
 }
 
@@ -8927,7 +8937,7 @@ local make_widget
 
 -- Properties upstream declares as a getter/setter pair (P_GETTER_SETTER):
 -- read and written through the widget's Get<Name>/Set<Name>.
-local IMGUI_GETSET = {Text = true}
+local IMGUI_GETSET = {Text = true, DragDropType = true, ParentElement = true}
 
 local function type_of_widget(handle)
   local _, short = Ext._Internal.ImguiObject(handle)
@@ -9013,8 +9023,11 @@ imgui_widget.__index = function(self, key)
 
   -- Upstream's getter/setter properties have no field to read.
   if IMGUI_GETSET[key] then
-    local ok, value = Ext._Internal.ImguiCall(handle, "Get" .. key)
-    if ok then return value end
+    local ok, value, isWidget = Ext._Internal.ImguiCall(handle, "Get" .. key)
+    if ok then
+      if isWidget then return make_widget(value) end
+      return value
+    end
   end
 
   if addr ~= nil then
@@ -9095,6 +9108,10 @@ imgui_widget.__newindex = function(self, key, value)
   end
 
   if IMGUI_GETSET[key] and value ~= nil then
+    -- Upstream's limit: the type has to fit ImGuiPayload::DataType.
+    if key == "DragDropType" and #tostring(value) >= 33 then
+      error("Drag drop type must be at most 33 characters", 2)
+    end
     if Ext._Internal.ImguiCall(handle, "Set" .. key, tostring(value)) then return end
   end
 
@@ -9543,6 +9560,36 @@ local function translated_get(self)
 end
 builtin_members["TranslatedString"] = {Get = {Fn = translated_get}}
 builtin_members["TranslatedFSString"] = {Get = {Fn = translated_get}}
+
+-- esv::Character::GetStatus: the character's status of that ID, from its
+-- status machine, as upstream's loops over StatusManager->Statuses.
+local function server_get_status(self, statusId)
+  local machine = self.StatusManager
+  local statuses = machine ~= nil and machine.Statuses or nil
+  if statuses == nil then return nil end
+  for _, status in pairs(statuses) do
+    if status.StatusId == statusId then return status end
+  end
+  return nil
+end
+
+-- entity.ServerCharacter.Character and .ServerItem.Item: deprecated upstream
+-- and the object itself.
+local warned_self_alias = {}
+local function self_alias(name)
+  return function(self)
+    if not warned_self_alias[name] then
+      warned_self_alias[name] = true
+      Ext.Log.PrintWarning("entity." .. name .. " is deprecated; use the component itself instead")
+    end
+    return self
+  end
+end
+builtin_members["esv::Character"] = {
+  GetStatus = {Fn = server_get_status},
+  Character = {Get = self_alias("ServerCharacter.Character")},
+}
+builtin_members["esv::Item"] = {Item = {Get = self_alias("ServerItem.Item")}}
 
 -- Published so the views can reach it; the prelude is compiled in more than
 -- one chunk, so a local here is not in scope there.
@@ -10798,10 +10845,18 @@ function Ext.Require(a, b)
   return result
 end
 
--- bg3se exposes its shared library table here. bg3le has no bundled
--- library to expose, so it is an empty table rather than absent: a mod
--- indexing it gets nil for a member instead of an error on the table.
-Ext.CoreLib = {}
+-- Upstream's Startup.lua: one of the builtin:// libraries, loaded once.
+do
+  local core_libs = {}
+  Ext.CoreLib = function(name)
+    if core_libs[name] == nil then
+      core_libs[name] = Ext.Utils.Include(nil, "builtin://Libs/" .. tostring(name) .. ".lua") or true
+    end
+    local lib = core_libs[name]
+    if lib == true then return nil end
+    return lib
+  end
+end
 
 -- ---- Ext.Utils ----
 Ext.Utils = {
@@ -13826,6 +13881,26 @@ function read_object(addr, class, prefix, out)
   })
 end
 
+-- Upstream's Ext.System (SystemMap): the context's own ECS systems by bg3se's
+-- label -- Ext.System.ClientVisual is ecl::VisualSystem -- as views of the
+-- live system through its field table, so a write such as Armory's
+-- ReloadAllVisuals = true lands on the engine's object.
+Ext.System = setmetatable({}, {
+  __index = function(_, name)
+    if type(name) ~= "string" then return nil end
+    local probe = Ext._Internal.SystemProbe(name)
+    if probe == nil or not probe.Ok or probe.System == 0
+       or Ext._Internal.ObjectFields(probe.Class, "") == nil then
+      Ext.Log.PrintWarning("Trying to access system that is not mapped: " .. name)
+      return nil
+    end
+    return read_object(probe.System, probe.Class, "", {})
+  end,
+  __newindex = function() error("Ext.System is read-only", 2) end,
+  __tostring = function() return "SystemMap" end,
+  __name = "SystemMap",
+})
+
 -- What a pointer field reads as: the object it points at, read as an object
 -- of its own class -- a fresh root, so the paths below it stay short however
 -- deep the chain -- and read when first touched, since pointers form cycles.
@@ -15427,6 +15502,15 @@ local function template_at(address, engineType)
   -- What the engine calls it, which is not a field on the object, so it goes
   -- into the snapshot rather than at the engine.
   Ext._Internal.AmendObject(out, "TemplateType", engineType)
+  -- GetTemplateStorageType: the top three bits of the template's handle,
+  -- which sits just after ParentTemplateId and has no field of its own.
+  local at = Ext._Internal.ObjectFieldAddress(address, class, "ParentTemplateId")
+  local handle = at ~= nil and Ext._Internal.Peek(at + 4, 4) or nil
+  if handle ~= nil then
+    local storage = {[0] = "RootTemplate", "GlobalTemplate", "LocalTemplate",
+                     "CacheTemplate", "LevelTemplate", "LevelCacheTemplate"}
+    Ext._Internal.AmendObject(out, "TemplateStorageType", storage[handle >> 29])
+  end
   return out
 end
 
