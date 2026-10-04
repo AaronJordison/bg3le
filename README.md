@@ -197,6 +197,12 @@ container and nothing else in the chain. It records the last launch in
 `~/.local/share/bg3le/launch.log`; if bg3le does not appear, that says whether
 the wrapper found the game.
 
+bg3le's own log is in `~/.local/share/bg3le/logs/`, one
+`bg3le-<date>-<time>-<pid>.log` per launch, keeping the last ten. After a
+crash, the next launch names the crashed run's log on the main menu. For a
+bug report, send that log and `launch.log`. `BG3LE_LOG=<path>` writes
+`<path>.<pid>` instead, for every process in the launch chain.
+
 `run-native.sh` is the development harness. It runs the
 game inside the Steam runtime container by default, and `SNIPER=0` runs it
 straight on the host — the native binary needs only `libssl.so.1.1` and

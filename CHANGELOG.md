@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.3 (2026-10-04)
+
+- Fixed a crash at startup on the Steam Deck with lsfg-vk (Decky's Lossless Scaling frame generation), even with
+  the plugin switched off. lsfg-vk makes its own Vulkan device while the game creates its swapchain, and the ImGui
+  overlay took it for the game's. The overlay now stays on the game's device. `BG3LE_IMGUI=0` was the workaround.
+- **Logs moved out of `/tmp`.** bg3le's log is now `~/.local/share/bg3le/logs/bg3le-<date>-<time>-<pid>.log`, one
+  per launch, keeping the last ten, so it survives a reboot and is easy to find from the Deck's Desktop Mode. Only the
+  game gets a log; the launch chain's helper processes no longer leave files. `BG3LE_LOG` still overrides it.
+- After a crash, the next launch names the crashed run's log on the main menu.
+- The ImGui overlay's Vulkan setup is logged step by step, so a crash there shows which step it was.
+- A Lua context is now entered only after its lock is held. A tick waiting on a save load's reset could otherwise
+  have run on the Lua state the reset had just closed.
+
 ## v0.2.1 (2026-10-03)
 
 - **Multiplayer.** `Ext.Net` and synced `Ext.Vars` now cross between machines over the game's connection, in
