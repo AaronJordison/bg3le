@@ -204,11 +204,14 @@ extern "C" void* bg3le_imgui_object(std::uint64_t handle,
     return object;
 }
 
+// Upstream's Renderable::Destroy, which takes a child out of its parent's
+// Children first; destroying through the manager alone left a dead handle there.
 extern "C" bool bg3le_imgui_destroy(std::uint64_t handle) {
     const std::lock_guard<std::mutex> held(bg3le::lock());
-    auto& manager = bg3le::objects();
-    if (manager == nullptr) return false;
-    return manager->DestroyRenderable(handle);
+    auto* object = bg3le::renderable(handle);
+    if (object == nullptr) return false;
+    object->Destroy();
+    return true;
 }
 
 extern "C" void bg3le_imgui_enable_demo(bool enabled) {
