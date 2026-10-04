@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.4 (2026-10-04)
+
+- Fixed components of an entity created this tick reading as nil: an item just made with `Osi.CreateAt` keeps its
+  components in the engine's immediate cache until they are committed, and bg3le read only committed storage.
+  Upstream falls back to that cache and then the command buffer, and now so does bg3le. Armory's item preview
+  failed on `.Data`, and removing a transmog lost the item: the transmogged piece was deleted and the restored one
+  was left at the world origin.
+- `Ext.Types.Unserialize` writes nested structs, arrays and maps in place, as upstream's does, instead of refusing
+  them as "not writable". Arrays of structs can be resized, so assigning or appending to one (`Use.Boosts`,
+  `ServerBaseWeapon.DamageList`, `Weapon.Rolls`) works. Armory's transmog copies whole components this way.
+- `widget:Destroy()` removes an ImGui widget from its parent's `Children`, as upstream's does. A destroyed child
+  stayed listed, and a mod walking `Children` again got "this widget no longer exists" (Armory's equipment picker).
+
 ## v0.2.3 (2026-10-04)
 
 - Fixed a crash at startup on the Steam Deck with lsfg-vk (Decky's Lossless Scaling frame generation), even with
