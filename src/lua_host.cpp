@@ -9503,33 +9503,70 @@ function Ext.Types.Serialize(object)
   return deep_plain(object, {})
 end
 
-function Ext.Types.Unserialize(object, values)
-  if type(values) ~= "table" then
-    error("Ext.Types.Unserialize expects a table", 2)
-  end
-
-  -- A container that can be written whole (a set, an object's array) is,
-  -- and a failure is reported: 5eSpells adds and removes spells this way.
-  -- Anything else takes the per-key loop, which writes through.
+-- Upstream's Unserialize writes nested objects in place: a struct field by
+-- its fields, an array resized to the list, a map by its keys.
+local function unserialize_into(object, values)
   local meta = getmetatable(object)
   local assign = type(meta) == "table" and meta.__bg3leAssign
   if assign then
-    local ok, err = pcall(assign, values)
-    if not ok then error(err, 2) end
-    return object
+    assign(values)
+    return
+  end
+  for k, v in pairs(values) do
+    local cur
+    if type(v) == "table" then
+      local ok, value = pcall(function() return object[k] end)
+      if ok then cur = value end
+    end
+    if type(v) == "table" and Ext._Internal.Walkable(cur) then
+      local okLen, n = false, nil
+      if next(v) == nil or v[1] ~= nil then
+        okLen, n = pcall(function() return #cur end)
+      end
+      if okLen and n ~= #v then
+        object[k] = v  -- resizes; the setter fills struct elements
+      else
+        unserialize_into(cur, v)
+      end
+    else
+      local ok, err = pcall(function() object[k] = v end)
+      if not ok then
+        -- A new map key holding a struct: the key went in with a default value.
+        local added = type(v) == "table" and object[k] or nil
+        if not Ext._Internal.Walkable(added) then error(err, 0) end
+        unserialize_into(added, v)
+      end
+    end
+  end
+end
+
+function Ext.Types.Unserialize(object, values)
+  if type(values) ~= "table" then
+    error("Ext.Types.Unserialize expects a table", 2)
   end
 
   -- Through the same setter an assignment uses, with one difference that
   -- upstream makes too: its Unserialize writes an OverrideableProperty's
   -- Value and leaves IsOverridden as it was, where assigning the property
   -- marks it overridden. So the setter is told which this is.
+  local outer = Ext._Internal.Unserializing
   Ext._Internal.Unserializing = true
-  local ok, err = pcall(function()
-    for k, v in pairs(values) do object[k] = v end
-  end)
-  Ext._Internal.Unserializing = false
+  local ok, err = pcall(unserialize_into, object, values)
+  Ext._Internal.Unserializing = outer
   if not ok then error(err, 2) end
   return object
+end
+
+-- Fills the struct elements of an array just assigned from a list: the
+-- whole-array write sizes it, but only writes plain elements.
+function Ext._Internal.FillStructElements(view, list)
+  if not Ext._Internal.Walkable(view) then return end
+  for i, item in ipairs(list) do
+    if type(item) == "table" then
+      local element = view[i]
+      if Ext._Internal.Walkable(element) then Ext.Types.Unserialize(element, item) end
+    end
+  end
 end
 
 -- Upstream's Construct checks the type and stops there -- its body is a
@@ -11871,7 +11908,12 @@ end
 function Ext._Internal.ResizedList(current, n, i, v)
   local list = {}
   for j = 1, n do
-    if j ~= i then list[#list + 1] = current(j) end
+    if j ~= i then
+      -- A struct element as a plain table, refilled after the resize.
+      local element = current(j)
+      if Ext._Internal.Walkable(element) then element = Ext.Types.Serialize(element) end
+      list[#list + 1] = element
+    end
   end
   if v ~= nil then list[#list + 1] = v end
   return list
@@ -12014,8 +12056,16 @@ make_array = function(handle, comp, path)
       local n = length()
       local ok, err
       if type(i) == "number" and ((v == nil and i >= 1 and i <= n) or i == n + 1) then
-        ok, err = Ext._Internal.SetField(handle, comp, path,
-          Ext._Internal.ResizedList(element, n, i, v))
+        local list = Ext._Internal.ResizedList(element, n, i, v)
+        ok, err = Ext._Internal.SetField(handle, comp, path, list)
+        if ok then
+          for j, item in ipairs(list) do
+            if type(item) == "table" then
+              local e = element(j)
+              if Ext._Internal.Walkable(e) then Ext.Types.Unserialize(e, item) end
+            end
+          end
+        end
       else
         ok, err = Ext._Internal.SetField(handle, comp, element_path(i), v)
       end
@@ -12230,6 +12280,8 @@ make_fields = function(handle, comp, prefix, fields, identity)
       -- keys cannot be written in place. A table is the whole set.
       if not ok and type(value) == "table" and tostring(err):find("is read-only", 1, true) then
         ok, err = Ext._Internal.SetSet(handle, comp, path, value)
+      elseif ok and type(value) == "table" and value[1] ~= nil then
+        Ext._Internal.FillStructElements(self[key], value)
       end
       if not ok then error("bg3le: " .. tostring(err), 0) end
     end,
