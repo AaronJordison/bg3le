@@ -1362,6 +1362,9 @@ void cleanup_sanity_check() {
 __attribute__((constructor)) static void bg3le_init() {
     log_init();
     logf("bg3le loaded");
+    if (bg3le::log_previous_crash()[0] != '\0') {
+        logf("the previous run crashed; its log is %s", bg3le::log_previous_crash());
+    }
     // LD_PRELOAD reaches every process the game starts -- the console's
     // launcher, the crash reporter -- and engine offsets mean nothing there.
     if (!bg3le::host_is_game()) return;

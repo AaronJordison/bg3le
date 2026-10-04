@@ -2,7 +2,8 @@
 # Launch the native Linux BG3 build with the extender shim attached.
 #
 # Shim logs go to $BG3LE_LOG.<pid> (default /tmp/bg3le.log.<pid>); the game's
-# own process is the one whose log mentions COsiris.
+# own process is the one whose log mentions COsiris. BG3LE_LOG= (empty) uses
+# what an installed bg3le does: <install>/logs, game process only.
 #
 # MangoHud is on by default. It loads as a Vulkan implicit layer rather than
 # via its LD_PRELOAD shim, so it cannot collide with ours. MANGOHUD=0 or
@@ -110,9 +111,11 @@ fi
 if [ "${NOPRELOAD:-0}" = "1" ]; then
     game=(./bin/bg3 "${args[@]}")
 else
-    game=(env "LD_PRELOAD=$preload"
-          "BG3LE_LOG=${BG3LE_LOG:-/tmp/bg3le.log}"
-          ./bin/bg3 "${args[@]}")
+    game=(env "LD_PRELOAD=$preload")
+    # BG3LE_LOG= (set but empty) leaves the game to bg3le's default logs dir.
+    log="${BG3LE_LOG-/tmp/bg3le.log}"
+    [ -n "$log" ] && game+=("BG3LE_LOG=$log")
+    game+=(./bin/bg3 "${args[@]}")
 fi
 
 # HEADLESS=1 runs the game inside gamescope's headless backend: a real GPU

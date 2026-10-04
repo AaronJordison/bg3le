@@ -102,6 +102,7 @@ std::atomic<bool> g_crashed{false};
 
 void crash_handler(int sig, siginfo_t* info, void* context) {
     if (!g_crashed.exchange(true)) {
+        log_mark_crash();
         void* frames[48];
         const int n = ::backtrace(frames, 48);
         const std::uintptr_t bias = main_bias();

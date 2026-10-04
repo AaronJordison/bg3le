@@ -83,9 +83,13 @@ bool state_id(void* state, std::uint32_t* out) {
 // ecl::ScriptExtender::ShowVersionNumber, queued until the copyright
 // string is in the repository.
 void show_version_number() {
-    translated_string_show_version(
-        "\r\nbg3le loaded, Script Extender v32 API, built on " __DATE__
-        " " __TIME__ ".");
+    std::string text = "\r\nbg3le loaded, Script Extender v32 API, built on " __DATE__
+                       " " __TIME__ ".";
+    if (log_previous_crash()[0] != '\0') {
+        text += "\r\nThe last run crashed. Its log is ";
+        text += log_previous_crash();
+    }
+    translated_string_show_version(text.c_str());
 }
 
 std::uint64_t load_module_exit_hook(void* state, void* a, void* b, void* c) {
