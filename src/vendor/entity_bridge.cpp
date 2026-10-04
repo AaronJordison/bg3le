@@ -1036,6 +1036,29 @@ extern "C" int bg3le_entity_ecb_changes(void* container, std::uint64_t handle,
     return n;
 }
 
+// A component not committed yet, such as one on an item Osi.CreateAt has just
+// made: upstream's fallback to the immediate cache, then the thread's command
+// buffer (EntityWorld::GetRawComponent). *immediate is set for the cache, which
+// holds the component itself rather than a proxy's slot.
+extern "C" void* bg3le_entity_pending_component(void* container, std::uint64_t handle,
+                                                std::uint16_t type, bool* immediate) {
+    *immediate = false;
+    auto* world = bg3le::world_from_container(container);
+    if (world == nullptr) return nullptr;
+    const bg3se::EntityHandle entity{handle};
+    const bg3se::ecs::ComponentTypeIndex typeId{type};
+    if (world->Cache != nullptr) {
+        void* change = world->Cache->WriteChanges.GetChange(entity, typeId);
+        if (change == nullptr) change = world->Cache->ReadChanges.GetChange(entity, typeId);
+        if (change != nullptr) {
+            *immediate = true;
+            return change;
+        }
+    }
+    if (bg3le_engine_thread_index() < 0) return nullptr;
+    return world->Deferred()->GetComponentChange(entity, typeId);
+}
+
 extern "C" bool bg3le_entity_destroy(void* container, std::uint64_t handle) {
     auto* world = bg3le::world_from_container(container);
     if (world == nullptr || bg3le_engine_thread_index() < 0 || !bg3le_game_allocator_ready()) return false;

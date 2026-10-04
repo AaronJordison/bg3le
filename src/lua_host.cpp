@@ -1449,6 +1449,8 @@ extern "C" std::size_t bg3le_entities_collect(void* container,
 extern "C" void* bg3le_entity_component(void* container, std::uint64_t handle,
                                         std::uint16_t componentIndex,
                                         std::size_t componentSize);
+extern "C" void* bg3le_entity_pending_component(void* container, std::uint64_t handle,
+                                                std::uint16_t type, bool* immediate);
 
 // The container belonging to the server world.
 //
@@ -1581,20 +1583,26 @@ void* component_pointer(std::uint64_t handle, const char* name,
     // it in a per-storage pool keyed by entity. Reading one through the page
     // returns whatever is at that offset, which is what the one-frame entries
     // in SizeAudit were -- not a wrong struct, a wrong mechanism.
+    const auto type = static_cast<std::uint16_t>(*index);
+    void* slot = nullptr;
     if (bg3le_meta_component_is_one_frame(*meta)) {
-        return bg3le_entity_one_frame_component(
-            world_container(), handle, static_cast<std::uint16_t>(*index));
+        slot = bg3le_entity_one_frame_component(world_container(), handle, type);
+        if (slot != nullptr) return slot;
+    } else {
+        // The stride, not the struct size. For a proxy component the page holds a
+        // pointer and the struct lives wherever it points, so passing the struct
+        // size would stride the page wrongly and then read the pointer's own bytes
+        // as the first fields. 46 of the components a live save carries are
+        // proxies, so this is not an edge case.
+        slot = bg3le_entity_component(world_container(), handle, type,
+                                      bg3le_meta_component_stride(*meta));
     }
-
-    // The stride, not the struct size. For a proxy component the page holds a
-    // pointer and the struct lives wherever it points, so passing the struct
-    // size would stride the page wrongly and then read the pointer's own bytes
-    // as the first fields. 46 of the components a live save carries are
-    // proxies, so this is not an edge case.
-    void* slot = bg3le_entity_component(world_container(), handle,
-                                        static_cast<std::uint16_t>(*index),
-                                        bg3le_meta_component_stride(*meta));
-    if (slot == nullptr) return nullptr;
+    if (slot == nullptr) {
+        // Not committed yet; the immediate cache holds the component itself.
+        bool immediate = false;
+        slot = bg3le_entity_pending_component(world_container(), handle, type, &immediate);
+        if (slot == nullptr || immediate) return slot;
+    }
 
     if (bg3le_meta_component_is_proxy(*meta)) {
         void* target = nullptr;
@@ -6729,6 +6737,11 @@ int l_entity_has_component(lua_State* L) {
     bg3le_entity_probe(world_container(), handle,
                        static_cast<std::uint16_t>(*index), &storageIndex,
                        &storage, &component);
+    if (component == nullptr) {
+        bool immediate = false;
+        component = bg3le_entity_pending_component(
+            world_container(), handle, static_cast<std::uint16_t>(*index), &immediate);
+    }
     lua_pushboolean(L, component != nullptr);
     return 1;
 }
