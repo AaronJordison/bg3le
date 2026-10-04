@@ -130,7 +130,8 @@ extern "C" VkResult vkCreateDevice(VkPhysicalDevice phys,
     using Fn = VkResult (*)(VkPhysicalDevice, VkDeviceCreateInfo const*,
                             VkAllocationCallbacks const*, VkDevice*);
     static const Fn next = real<Fn>("vkCreateDevice");
-    g_physical = phys;
+    // The first is the game's; a layer such as lsfg-vk may make its own later.
+    if (g_physical == VK_NULL_HANDLE) g_physical = phys;
     const Fn take = hooked<Fn>(next);
     if (take != nullptr && take != (Fn)&vkCreateDevice) return take(phys, info, alloc, out);
     return next(phys, info, alloc, out);

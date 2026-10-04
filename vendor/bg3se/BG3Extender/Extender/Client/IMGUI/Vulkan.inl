@@ -370,6 +370,11 @@ private:
         }
 
         if (result != VK_SUCCESS) return;
+        // bg3le: a layer's own instance (lsfg-vk makes one) is not the game's.
+        if (instance_ != VK_NULL_HANDLE) {
+            IMGUI_DEBUG("ignoring instance %p, not the game's", *pInstance);
+            return;
+        }
 
         instance_ = *pInstance;
 
@@ -411,6 +416,11 @@ private:
         if (result != VK_SUCCESS) return;
 
         std::lock_guard _(globalResourceLock_);
+        // bg3le: likewise a layer's own device, made while the game's is live.
+        if (device_ != VK_NULL_HANDLE) {
+            IMGUI_DEBUG("ignoring device %p, not the game's", *pDevice);
+            return;
+        }
         physicalDevice_ = physicalDevice;
         device_ = *pDevice;
         
@@ -487,7 +497,7 @@ private:
         VkPipelineCache* pPipelineCache,
         VkResult result)
     {
-        if (result != VK_SUCCESS) return;
+        if (result != VK_SUCCESS || device != device_) return;
 
         IMGUI_DEBUG("VK pipeline cache created: %p", *pPipelineCache);
         pipelineCache_ = *pPipelineCache;
@@ -500,7 +510,7 @@ private:
         VkSwapchainKHR* pSwapchain,
         VkResult result)
     {
-        if (result != VK_SUCCESS) return;
+        if (result != VK_SUCCESS || device != device_) return;
 
         std::lock_guard _(globalResourceLock_);
         IMGUI_DEBUG("VK swap chain created: %p", *pSwapchain);
