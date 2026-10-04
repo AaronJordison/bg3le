@@ -186,21 +186,32 @@ std::deque<std::vector<const osi::Function*>> g_overloads;
 //
 // Nested use is fine and happens: a client script can be loaded while the
 // server context is the current one.
+// Which context to enter. The state is read only once its lock is held: a
+// reset on another thread swaps both states while holding both locks, and a
+// pointer read before waiting for it is a freed state by the time it runs.
+enum class Side { Server, Client };
+
 class InContext {
 public:
-    explicit InContext(lua_State* want)
+    explicit InContext(Side side)
         : was_(t_lua),
-          lock_(want == g_client_lua ? g_client_lock : g_server_lock) {
-        if (want != nullptr) t_lua = want;
+          lock_(side == Side::Client ? g_client_lock : g_server_lock),
+          state_(side == Side::Client ? g_client_lua : g_server_lua) {
+        if (state_ != nullptr) t_lua = state_;
     }
     ~InContext() { t_lua = was_; }
 
     InContext(InContext const&) = delete;
     InContext& operator=(InContext const&) = delete;
 
+    // Whether the context has a state to run in.
+    explicit operator bool() const { return state_ != nullptr; }
+    lua_State* state() const { return state_; }
+
 private:
     lua_State* was_;
     std::lock_guard<std::recursive_mutex> lock_;
+    lua_State* state_;
 };
 
 bool to_value(lua_State* L, int idx, osi::Value* out) {
@@ -16156,19 +16167,22 @@ void lua_reset(bool load_mods) {
 void lua_load_client_scripts() {
     if (g_client_lua == nullptr) return;
     logf("lua: loading client mods");
-    InContext client(g_client_lua);
+    InContext client(Side::Client);
+    if (!client) return;
     call_internal("LoadModScripts");
 }
 
 void lua_restore_persistent_vars() {
     if (g_server_lua == nullptr) return;
-    InContext server(g_server_lua);
+    InContext server(Side::Server);
+    if (!server) return;
     call_internal("RestorePersistentVars");
 }
 
 void lua_restore_save_extras() {
     if (g_server_lua == nullptr) return;
-    InContext server(g_server_lua);
+    InContext server(Side::Server);
+    if (!server) return;
     call_internal("RestoreSaveExtras");
 }
 
@@ -16208,7 +16222,8 @@ void read_saved_variables(lua_State* L, int table, std::vector<SavedVariable>* o
 
 bool lua_extras_to_save(SaveExtras* out) {
     if (g_server_lua == nullptr) return false;
-    InContext server(g_server_lua);
+    InContext server(Side::Server);
+    if (!server) return false;
     lua_State* L = g_lua;
     const int top = lua_gettop(L);
     lua_getglobal(L, "Ext");
@@ -16259,7 +16274,8 @@ bool lua_extras_to_save(SaveExtras* out) {
 bool lua_persistent_vars_to_save(
     std::vector<std::pair<std::string, std::string>>* out) {
     if (g_server_lua == nullptr) return false;
-    InContext server(g_server_lua);
+    InContext server(Side::Server);
+    if (!server) return false;
     lua_State* L = g_lua;
     const int top = lua_gettop(L);
     lua_getglobal(L, "Ext");
@@ -16295,7 +16311,8 @@ std::atomic<bool> g_client_ticks_itself{false};
 // lock, as upstream's LuaClientPin does; false before the client ticks.
 extern "C" bool bg3le_with_client_lua(void (*fn)(lua_State*, void*), void* user) {
     if (g_client_lua == nullptr || !g_client_ticks_itself.load()) return false;
-    InContext client(g_client_lua);
+    InContext client(Side::Client);
+    if (!client) return false;
     fn(g_lua, user);
     return true;
 }
@@ -16313,22 +16330,22 @@ void lua_tick() {
     if (g_reset_events_pending) {
         g_reset_events_pending = false;
         {
-            InContext server(g_server_lua);
-            call_internal("AfterReset");
+            InContext server(Side::Server);
+            if (server) call_internal("AfterReset");
         }
         if (g_client_lua != nullptr) {
-            InContext client(g_client_lua);
-            call_internal("AfterReset");
+            InContext client(Side::Client);
+            if (client) call_internal("AfterReset");
         }
     }
     {
-        InContext server(g_server_lua);
-        call_internal("RunTimers");
+        InContext server(Side::Server);
+        if (server) call_internal("RunTimers");
     }
     // The client ticks on its own thread once src/game_state.cpp drives it.
     if (g_client_lua != nullptr && !g_client_ticks_itself.load()) {
-        InContext client(g_client_lua);
-        call_internal("RunTimers");
+        InContext client(Side::Client);
+        if (client) call_internal("RunTimers");
     }
 }
 
@@ -16343,13 +16360,14 @@ void lua_client_tick(char const* from, char const* to) {
         lua_reset(false);
         lua_load_client_scripts();
         if (g_client_lua != nullptr) {
-            InContext client(g_client_lua);
-            call_internal("AfterReset");
+            InContext client(Side::Client);
+            if (client) call_internal("AfterReset");
         }
     }
     if (g_client_lua == nullptr) return;
     g_client_ticks_itself.store(true);
-    InContext client(g_client_lua);
+    InContext client(Side::Client);
+    if (!client) return;
     if (from != nullptr && to != nullptr) {
         lua_getglobal(g_lua, "Ext");
         lua_getfield(g_lua, -1, "_Internal");
@@ -16373,7 +16391,8 @@ void lua_client_tick(char const* from, char const* to) {
 bool lua_client_input(InputKind kind, long long a, long long b, long long c,
                       long long d, long long e, double x, double y) {
     if (g_client_lua == nullptr || !g_client_ticks_itself.load()) return false;
-    InContext client(g_client_lua);
+    InContext client(Side::Client);
+    if (!client) return false;
     lua_getglobal(g_lua, "Ext");
     lua_getfield(g_lua, -1, "_Internal");
     lua_getfield(g_lua, -1, "InputEvent");
@@ -16400,12 +16419,12 @@ bool lua_client_input(InputKind kind, long long a, long long b, long long c,
 // server for something wants a listener already registered.
 void lua_load_mods() {
     {
-        InContext server(g_server_lua);
-        call_internal("LoadMods");
+        InContext server(Side::Server);
+        if (server) call_internal("LoadMods");
     }
     if (g_client_lua != nullptr) {
-        InContext client(g_client_lua);
-        call_internal("LoadMods");
+        InContext client(Side::Client);
+        if (client) call_internal("LoadMods");
     }
 }
 
@@ -16518,8 +16537,8 @@ setmetatable(_G, {
 void system_update_event(bool client, std::int32_t index, bool post) {
     lua_State* want = client ? g_client_lua : g_server_lua;
     if (want == nullptr) return;
-    InContext context(want);
-    if ((client ? g_client_lua : g_server_lua) != want) return;  // reset meanwhile
+    InContext context(client ? Side::Client : Side::Server);
+    if (context.state() != want) return;  // reset meanwhile
     lua_State* L = want;
     const int top = lua_gettop(L);
     lua_getglobal(L, "Ext");
@@ -16548,7 +16567,12 @@ void lua_eval_in(bool client, const char* code, std::string* result,
         return;
     }
 
-    InContext context(want);
+    InContext context(client ? Side::Client : Side::Server);
+    if (!context) {
+        *error = client ? "there is no client Lua context"
+                        : "there is no server Lua context";
+        return;
+    }
     lua_eval(code, result, error);
 }
 
