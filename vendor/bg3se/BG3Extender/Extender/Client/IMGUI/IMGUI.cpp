@@ -5,10 +5,12 @@
 #include <Extender/Shared/ScriptHelpers.h>
 #include <CoreLib/Wrappers.h>
 
-// #define IMGUI_DEBUG(msg, ...) DEBUG("[IMGUI] " msg, __VA_ARGS__)
-#define IMGUI_DEBUG(msg, ...)
+// bg3le: into bg3le's log, which exists before the console does. Setup only;
+// the per-frame lines stay off.
+namespace bg3le { void logf(const char* fmt, ...); }
+#define IMGUI_DEBUG(msg, ...) bg3le::logf("imgui: " msg __VA_OPT__(,) __VA_ARGS__)
 
-#define IMGUI_FRAME_DEBUG(msg, ...) if ((frameNo_ % 100) == 0) { IMGUI_DEBUG(msg, __VA_ARGS__); }
+#define IMGUI_FRAME_DEBUG(msg, ...)
 
 #include <Extender/Client/IMGUI/Vulkan.inl>
 // The D3D11 backend needs the DirectX headers. The native Linux build

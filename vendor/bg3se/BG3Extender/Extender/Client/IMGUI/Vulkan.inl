@@ -593,6 +593,7 @@ private:
             };
 
             VK_CHECK(vkCreateRenderPass(device_, &rpinfo, NULL, &swapInfo.renderPass_));
+            IMGUI_DEBUG("render pass %p", swapInfo.renderPass_);
         }
 
         {
@@ -603,6 +604,7 @@ private:
                 queueFamily_
             };
             VK_CHECK(vkCreateCommandPool(device_, &createInfo, nullptr, &swapchain_.commandPool_));
+            IMGUI_DEBUG("command pool %p (queue family %d)", swapchain_.commandPool_, queueFamily_);
         }
 
         // serialise out the swap chain images
@@ -617,6 +619,7 @@ private:
 
             // go through our own function so we assign these images IDs
             VK_CHECK(vkGetSwapchainImagesKHR(device_, swapChain_, &numSwapImages, images.data()));
+            IMGUI_DEBUG("%u swapchain images", numSwapImages);
 
             for (uint32_t i = 0; i < numSwapImages; i++)
             {
@@ -683,6 +686,7 @@ private:
                     };
 
                     VK_CHECK(vkCreateFramebuffer(device_, &fbinfo, NULL, &imInfo.framebuffer));
+                    IMGUI_DEBUG("image %u: view %p, framebuffer %p", i, imInfo.view, imInfo.framebuffer);
                 }
             }
 

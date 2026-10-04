@@ -170,9 +170,15 @@ extern "C" VkResult vkCreateSwapchainKHR(VkDevice dev,
         }
     }
 
+    bg3le::logf("vulkan: creating a swapchain, %ux%u format %d colour space %d usage %#x (asked %#x)",
+                copy.imageExtent.width, copy.imageExtent.height, (int)copy.imageFormat,
+                (int)copy.imageColorSpace, (unsigned)copy.imageUsage, (unsigned)info->imageUsage);
     const Fn take = hooked<Fn>(next);
-    if (take != nullptr && take != (Fn)&vkCreateSwapchainKHR) return take(dev, &copy, alloc, out);
-    return next(dev, &copy, alloc, out);
+    const VkResult result = (take != nullptr && take != (Fn)&vkCreateSwapchainKHR)
+        ? take(dev, &copy, alloc, out)
+        : next(dev, &copy, alloc, out);
+    bg3le::logf("vulkan: swapchain created: %d", (int)result);
+    return result;
 }
 
 BG3LE_FORWARD(void, vkDestroySwapchainKHR,
