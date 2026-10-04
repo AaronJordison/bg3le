@@ -2662,7 +2662,7 @@ extern "C" bool bg3le_meta_array_resize(void const* handle, char const* path,
     if (!r.Ok || r.Address == nullptr || r.Field.Kind != FieldKind::DynArray
         || r.Field.ReadOnly || r.Field.Data == nullptr
         || (count != 0 && !element_assignable(r.Field.ElemKind)
-            && r.Field.ElemKind != FieldKind::Struct)) {
+            && r.Field.ElemTypeName == nullptr)) {
         return false;
     }
     if (r.Field.Resize == nullptr) {

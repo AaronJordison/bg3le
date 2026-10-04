@@ -9530,11 +9530,13 @@ local function unserialize_into(object, values)
       end
     else
       local ok, err = pcall(function() object[k] = v end)
-      if not ok then
-        -- A new map key holding a struct: the key went in with a default value.
-        local added = type(v) == "table" and object[k] or nil
-        if not Ext._Internal.Walkable(added) then error(err, 0) end
+      -- A new map key: its value went in whole, or failed, and either way
+      -- its structs are filled in place.
+      local added = type(v) == "table" and object[k] or nil
+      if Ext._Internal.Walkable(added) then
         unserialize_into(added, v)
+      elseif not ok then
+        error(err, 0)
       end
     end
   end
