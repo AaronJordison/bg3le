@@ -100,6 +100,11 @@ std::uint64_t load_module_exit_hook(void* state, void* a, void* b, void* c) {
         show_version_number();
         lua_load_client_scripts();
     }
+    // Every module load -- including the save's reload -- ends here, with the
+    // engine's stats freshly parsed. Fire StatsLoaded now, as upstream does from
+    // RPGStats::Load, so a mod that rewires progressions lands before LoadSession/
+    // LoadLevel build the character. Idempotent per rebuild (StatsTakeLoaded).
+    lua_fire_stats_loaded();
     return result;
 }
 

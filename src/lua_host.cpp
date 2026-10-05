@@ -14730,9 +14730,19 @@ function Ext._Internal.LoadMods()
   -- After every mod's bootstrap, as upstream does: a mod subscribes in
   -- its bootstrap and expects to be called once everything is up.
   Ext._Internal.FireEvent("SessionLoaded")
-  -- Only for stats the engine has loaded since the last one, as upstream
-  -- fires it from RPGStats::Load: a save load keeps the stats, and a mod's
-  -- stats pass run twice appends twice.
+  Ext._Internal.FireStatsLoaded()
+end
+
+-- StatsLoaded alone, fired when the engine has just (re)loaded stats.
+--
+-- Upstream fires it from RPGStats::Load, which runs while the module is loading
+-- -- before any session exists. Firing it only from LoadMods (session time) is
+-- too late: a mod that rewires progressions at StatsLoaded (CF's Commit_Selectors
+-- and PassivesAdded) lands after LoadSession/LoadLevel have already built the
+-- character, so the character is built from the unwired progression and never
+-- gains the passives. StatsTakeLoaded makes it fire once per stats rebuild, so
+-- calling this from the module-load point and again from LoadMods is safe.
+function Ext._Internal.FireStatsLoaded()
   if Ext.Stats.Get ~= nil and Ext._Internal.StatsCount() > 0
      and Ext._Internal.StatsTakeLoaded() then
     Ext._Internal.FireEvent("StatsLoaded")
@@ -16513,6 +16523,20 @@ void lua_load_mods() {
     if (g_client_lua != nullptr) {
         InContext client(Side::Client);
         if (client) call_internal("LoadMods");
+    }
+}
+
+// Fire StatsLoaded in both contexts now, while the module's stats are loaded and
+// before a session exists -- upstream's RPGStats::Load timing. Idempotent per
+// stats rebuild (the prelude's FireStatsLoaded checks StatsTakeLoaded).
+void lua_fire_stats_loaded() {
+    {
+        InContext server(Side::Server);
+        if (server) call_internal("FireStatsLoaded");
+    }
+    if (g_client_lua != nullptr) {
+        InContext client(Side::Client);
+        if (client) call_internal("FireStatsLoaded");
     }
 }
 

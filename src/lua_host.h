@@ -30,6 +30,10 @@ void lua_tick();
 // since a mod's load-time code may call it.
 void lua_load_mods();
 
+// Fires the StatsLoaded event in both contexts at stats-load time (upstream's
+// RPGStats::Load timing), before a session is built. Idempotent per rebuild.
+void lua_fire_stats_loaded();
+
 // Evaluates a chunk, returning its stringified results or the error text.
 // Must be called from the story thread.
 // Evaluates in one context or the other. The console chooses: the
