@@ -30,6 +30,10 @@ namespace bg3le {
 void translated_string_show_version(char const* suffix);
 bool note_session_ended();
 
+// src/vendor/stats.cpp: whether the stats array has been (re)built since the last
+// StatsLoaded fire, per context, without recording it.
+extern "C" bool bg3le_stats_pending(bool client);
+
 namespace {
 
 // Addresses from targets.h: SetTargetState; ecl::GameStateLoadModule's vtable
@@ -120,6 +124,14 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
 
     static char const* last = nullptr;
     char const* now = client_game_state();
+
+    // Fire StatsLoaded the instant the engine's stats are rebuilt -- inside
+    // LoadModule, seconds before LoadSession deserialises the character -- rather
+    // than from LoadMods at session time. Upstream fires it from RPGStats::Load.
+    // Gated by the cheap C check; the Lua side fires once per rebuild.
+    if (now != nullptr && (bg3le_stats_pending(false) || bg3le_stats_pending(true))) {
+        lua_fire_stats_loaded();
+    }
     if (now != nullptr && last != nullptr && now != last) {
         logf("gamestate: client %s -> %s", last, now);
         // Upstream's client resets on UnloadSession and loads again leaving

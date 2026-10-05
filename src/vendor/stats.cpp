@@ -1208,6 +1208,25 @@ extern "C" std::size_t bg3le_stats_count() {
     return ready() ? state().Objects.Size : 0;
 }
 
+namespace {
+// Per-context identity of the stats array the last StatsLoaded described.
+void const*& fired_slot(bool client) {
+    static void const* fired[2] = {nullptr, nullptr};
+    return fired[client ? 1 : 0];
+}
+}  // namespace
+
+// The check half of bg3le_stats_take_loaded, without recording: true when the
+// stats array has been (re)built since the last fire. A per-frame hook uses this
+// to fire StatsLoaded the moment the engine's stats are new -- upstream's
+// RPGStats::Load timing, inside LoadModule and before any session exists.
+extern "C" bool bg3le_stats_pending(bool client) {
+    const CacheLock lock(stats_cache_lock());
+    if (!ready()) return false;
+    void const* first = object_at(0);
+    return first != nullptr && first != fired_slot(client);
+}
+
 // Whether the stats are new since StatsLoaded last fired, and records them as
 // fired if so. Upstream fires it only when the engine loads stats; a save
 // load keeps them, and firing again let 5eSpells append to the same Boosts
@@ -1216,9 +1235,8 @@ extern "C" std::size_t bg3le_stats_count() {
 extern "C" bool bg3le_stats_take_loaded(bool client) {
     const CacheLock lock(stats_cache_lock());
     if (!ready()) return false;
-    static void const* fired[2] = {nullptr, nullptr};  // per context
     void const* first = object_at(0);
-    void const*& last = fired[client ? 1 : 0];
+    void const*& last = fired_slot(client);
     if (first == nullptr || first == last) return false;
     if (last != nullptr) {
         logf("stats: the engine rebuilt its stats (first object %p, was %p)", first, last);
