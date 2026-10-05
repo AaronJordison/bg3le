@@ -33,6 +33,7 @@
 extern "C" {
 #include "lz4.h"
 }
+#include "zstd.h"
 
 namespace bg3le {
 
@@ -86,6 +87,7 @@ constexpr std::uint8_t kMethodMask = 0x0f;
 constexpr std::uint8_t kMethodNone = 0;
 constexpr std::uint8_t kMethodZlib = 1;
 constexpr std::uint8_t kMethodLZ4 = 2;
+constexpr std::uint8_t kMethodZstd = 3;
 
 // A name that fills the field has no terminator of its own.
 void copy_name(Entry* out, char const* name) {
@@ -126,8 +128,15 @@ bool read_entry(std::FILE* f, Entry const& e, std::vector<char>* out) {
         out->resize((std::size_t)e.UncompressedSize);
         return inflate(raw.data(), raw.size(), out->data(), out->size());
 
+    case kMethodZstd: {
+        // Newer LSLib builds pack with it (AutomaticMagicalSecretsExtender).
+        out->resize((std::size_t)e.UncompressedSize);
+        const std::size_t got = ZSTD_decompress(out->data(), out->size(),
+                                                raw.data(), raw.size());
+        return !ZSTD_isError(got) && got == (std::size_t)e.UncompressedSize;
+    }
+
     default:
-        // zstd exists in the format but nothing has been seen using it.
         return false;
     }
 }

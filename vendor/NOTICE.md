@@ -514,6 +514,19 @@ types out of the generated property maps, not to shim a symbol.
   under its own license.
 - **protobuf, SDL2, oneTBB** — from the distribution.
 
+## Zstandard — Meta Platforms and contributors
+
+`external/zstd/` is the decompressor from [Zstandard](https://github.com/facebook/zstd)
+v1.5.7 by **Yann Collet and the Zstandard contributors at Meta**, BSD
+(see `external/zstd/LICENSE`). `zstddeclib.c` is the release's single-file
+decoder, generated with its own `build/single_file_libs/combine.sh` from
+`zstd-1.5.7.tar.gz` (sha256 `eb33e51f…6fa3`), and `zstd.h` is the release's
+header. Unmodified.
+
+**Thank you.** Newer LSLib builds pack mods with zstd, and without it bg3le
+could not read those mods' scripts. Vendored rather than linked for the same
+reason as LZ4.
+
 ## LZ4 — Yann Collet
 
 `external/lz4/` is the block codec from [LZ4](https://github.com/lz4/lz4)
