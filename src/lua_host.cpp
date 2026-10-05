@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <cerrno>
 #include <cstdlib>
@@ -16231,8 +16232,27 @@ void lua_reset(bool load_mods) {
 
 // Once per client state: LoadModScripts guards itself, and a rebuilt state
 // (a new session, or back at the menu) loads them again.
+namespace {
+// Held back until the module list is found: without the statics cache only the
+// warming thread may search for it, which finishes well after the menu, and a
+// mod that calls Ext.Mod.GetMod as it loads (MCM) would find nothing.
+std::atomic<bool> g_client_scripts_waiting{false};
+std::chrono::steady_clock::time_point g_client_scripts_since;
+constexpr auto kClientScriptsMaxWait = std::chrono::seconds(60);
+}  // namespace
+
 void lua_load_client_scripts() {
     if (g_client_lua == nullptr) return;
+    if (bg3le_mods_count() == 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!g_client_scripts_waiting.exchange(true)) {
+            g_client_scripts_since = now;
+            logf("lua: client mods wait for the module list");
+        }
+        if (now - g_client_scripts_since < kClientScriptsMaxWait) return;
+        logf("lua: no module list after 60 s; loading client mods without it");
+    }
+    g_client_scripts_waiting.store(false);
     logf("lua: loading client mods");
     InContext client(Side::Client);
     if (!client) return;
@@ -16420,6 +16440,7 @@ bool story_ready();  // src/preload.cpp
 
 void lua_client_tick(char const* from, char const* to) {
     if (strtab_tripwire_on()) bg3le_strtab_check("client tick");
+    if (g_client_scripts_waiting.load()) lua_load_client_scripts();
     // Ext.Debug.Reset at the menu, where there is no server tick to do it:
     // the client's mods reload now, the server's with the next story.
     if (g_reset_pending && !story_ready()) {
