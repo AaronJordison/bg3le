@@ -1780,7 +1780,10 @@ void IMGUIObjectManager::ClientUpdate()
 
 void IMGUIObjectManager::Clear()
 {
-    for (auto window : windows_) {
+    // Copy to ensure we don't skip any windows since DestroyRenderable() deletes
+    // from the windows_ array which can cause the loop to miss items
+    Array<HandleType> windows = windows_;
+    for (auto window : windows) {
         DestroyRenderable(window);
     }
     
@@ -2003,7 +2006,7 @@ bool IMGUIManager::LoadFont(FontData& request)
 IMGUIManager::FontData* IMGUIManager::GetFont(FixedString const& name)
 {
     if (reducedFontAtlas_) {
-        if (name == GFS.strTiny || GFS.strSmall) {
+        if (name == GFS.strTiny || name == GFS.strSmall) {
             return fonts_.try_get(GFS.strMedium);
         }
 
