@@ -16555,12 +16555,10 @@ void lua_fire_stats_loaded_now() {
     {
         InContext server(Side::Server);
         if (server) call_internal("FireStatsLoadedNow");
-        logf("stats parse hook: server fire %s", server ? "dispatched" : "SKIPPED (no server VM)");
     }
     if (g_client_lua != nullptr) {
         InContext client(Side::Client);
         if (client) call_internal("FireStatsLoadedNow");
-        logf("stats parse hook: client fire %s", client ? "dispatched" : "SKIPPED (no client VM)");
     }
 }
 

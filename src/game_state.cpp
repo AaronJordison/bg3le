@@ -112,7 +112,6 @@ static void* g_real_stats_parse = nullptr;
 
 static void stats_parse_hook(void* a, void* b) {
     reinterpret_cast<void (*)(void*, void*)>(g_real_stats_parse)(a, b);
-    logf("stats parse hook: parse completed on tid %d", (int)gettid());
     g_stats_parsed.store(true, std::memory_order_release);
 }
 
