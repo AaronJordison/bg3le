@@ -13,6 +13,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -105,6 +107,47 @@ std::uint64_t load_module_exit_hook(void* state, void* a, void* b, void* c) {
 
 StateProc g_machine_update = nullptr;
 
+// ---- auto-continue: queue LoadSession without a single input ------------------------
+//
+// The engine's own Continue path ends in GameStateMachine::SetTargetState(LoadSession).
+// Rather than synthesise input (which needs window focus) or drive the menu, find the one
+// state object whose vtable is LoadSession's and hand it to the machine directly. No keys,
+// no dialogs, no focus. Enabled with BG3LE_AUTO_CONTINUE=1; the vtable offset is per build.
+constexpr std::uintptr_t kLoadSessionVtable = 0x79e0b48;  // image+0x... on 25605617
+std::atomic<bool> g_auto_continue_armed{true};
+
+bool auto_continue_wanted() {
+    static const bool on = std::getenv("BG3LE_AUTO_CONTINUE") != nullptr;
+    return on;
+}
+
+// Scan this process's readable+writable mappings for a word equal to the state's vtable
+// pointer; the object begins at that word. Bounded so a miss cannot stall the game.
+void* find_state_object(std::uintptr_t vtable) {
+    std::FILE* maps = std::fopen("/proc/self/maps", "r");
+    if (maps == nullptr) return nullptr;
+    char line[512];
+    std::size_t scanned = 0;
+    constexpr std::size_t kBudget = 768ull * 1024 * 1024;
+    while (std::fgets(line, sizeof line, maps) != nullptr && scanned < kBudget) {
+        unsigned long long start = 0, end = 0;
+        char perms[8] = {0};
+        if (std::sscanf(line, "%llx-%llx %7s", &start, &end, perms) != 3) continue;
+        if (perms[0] != 'r' || perms[1] != 'w') continue;
+        const std::size_t len = (std::size_t)(end - start);
+        if (len == 0 || len > kBudget) continue;
+        auto* p = reinterpret_cast<unsigned char const*>(start);
+        scanned += len;
+        for (std::size_t off = 0; off + 8 <= len; off += 8) {
+            std::uintptr_t word = 0;
+            std::memcpy(&word, p + off, sizeof word);
+            if (word == vtable) { std::fclose(maps); return (void*)(start + off); }
+        }
+    }
+    std::fclose(maps);
+    return nullptr;
+}
+
 // Every frame is a client tick, and a state that differs from the last
 // frame's is GameStateChanged -- upstream compares around its update call.
 std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
@@ -112,6 +155,20 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
     if (first.exchange(false)) logf("gamestate: client frames are ticking");
     const std::uint64_t result = g_machine_update(machine, a, b, c);
     net_client_tick();
+
+    static char const* last = nullptr;
+    char const* now = client_game_state();
+    if (auto_continue_wanted() && now != nullptr && std::strcmp(now, "Menu") == 0
+        && g_auto_continue_armed.load() && g_set_target_state != nullptr) {
+        g_auto_continue_armed.store(false);
+        void* state = find_state_object(load_bias() + kLoadSessionVtable);
+        if (state != nullptr) {
+            logf("gamestate: auto-continue queueing LoadSession (%p) — no input", state);
+            g_set_target_state(machine, state);
+        } else {
+            logf("gamestate: auto-continue could not find the LoadSession state object");
+        }
+    }
 
     static char const* last = nullptr;
     char const* now = client_game_state();
