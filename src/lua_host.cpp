@@ -14748,17 +14748,6 @@ function Ext._Internal.FireStatsLoaded()
     Ext._Internal.FireEvent("StatsLoaded")
   end
 end
--- The parser completing is a load, whatever the identity check thinks: the
--- server's reload can reuse the same array (same first object), which is
--- exactly when the gate above would swallow the only fire that reaches the
--- context where characters are built. Consumes any owed identity fire so the
--- per-frame path cannot repeat us. Fired by the stats parse hook (C side).
-function Ext._Internal.FireStatsLoadedNow()
-  if Ext.Stats.Get ~= nil and Ext._Internal.StatsCount() > 0 then
-    Ext._Internal.StatsTakeLoaded()
-    Ext._Internal.FireEvent("StatsLoaded")
-  end
-end
 -- Everything below runs last, once every module it touches exists.
 -- An earlier version ran here from further up, which meant it bound
 -- to tables that Ext.StaticData and others later replaced: the
@@ -16548,17 +16537,6 @@ void lua_fire_stats_loaded() {
     if (g_client_lua != nullptr) {
         InContext client(Side::Client);
         if (client) call_internal("FireStatsLoaded");
-    }
-}
-
-void lua_fire_stats_loaded_now() {
-    {
-        InContext server(Side::Server);
-        if (server) call_internal("FireStatsLoadedNow");
-    }
-    if (g_client_lua != nullptr) {
-        InContext client(Side::Client);
-        if (client) call_internal("FireStatsLoadedNow");
     }
 }
 

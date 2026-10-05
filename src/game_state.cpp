@@ -14,7 +14,6 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <unistd.h>
 #include <string>
 
 #include "hook.h"
@@ -97,24 +96,6 @@ void show_version_number() {
     translated_string_show_version(text.c_str());
 }
 
-// The stats parse hook. Norbyte's bg3se wraps RPGStats::Load and fires
-// StatsLoaded synchronously after every actual load, per context
-// (OnStatsLoadGuarded); upstream fires from inside RPGStats::Load. bg3le's
-// own fires -- the LoadModule exit and the per-frame identity check -- run on
-// the client's timeline: in a -continueGame load the server context parses
-// its stats after the client has left LoadModule, the identity gate then
-// swallows the only fire that could reach it (the reload reuses the array,
-// same first object), and CF's progression commits never land where
-// characters are built. The parser is the one funnel every context's stats
-// pass through: wrap it, owe one fire per parse, deliver on the frame tick.
-static std::atomic<bool> g_stats_parsed{false};
-static void* g_real_stats_parse = nullptr;
-
-static void stats_parse_hook(void* a, void* b) {
-    reinterpret_cast<void (*)(void*, void*)>(g_real_stats_parse)(a, b);
-    g_stats_parsed.store(true, std::memory_order_release);
-}
-
 std::uint64_t load_module_exit_hook(void* state, void* a, void* b, void* c) {
     const std::uint64_t result = g_load_module_exit(state, a, b, c);
     if (!g_left_load_module.exchange(true)) {
@@ -148,11 +129,7 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
     // LoadModule, seconds before LoadSession deserialises the character -- rather
     // than from LoadMods at session time. Upstream fires it from RPGStats::Load.
     // Gated by the cheap C check; the Lua side fires once per rebuild.
-    const bool parsed = g_stats_parsed.exchange(false, std::memory_order_acq_rel);
-    if (now != nullptr && parsed) {
-        lua_fire_stats_loaded_now();
-    } else if (now != nullptr
-               && (bg3le_stats_pending(false) || bg3le_stats_pending(true))) {
+    if (now != nullptr && (bg3le_stats_pending(false) || bg3le_stats_pending(true))) {
         lua_fire_stats_loaded();
     }
     if (now != nullptr && last != nullptr && now != last) {
@@ -189,23 +166,6 @@ void set_target_state_hook(void* machine, void* state) {
 }
 
 }  // namespace
-void install_stats_parse_hook() {
-    const std::uintptr_t at = target::StatsParse();
-    if (at == 0) {
-        logf("stats parse hook: parser signature not found; keeping the identity path");
-        return;
-    }
-    const std::size_t sites = hook_call_sites(
-        at, reinterpret_cast<void*>(&stats_parse_hook), &g_real_stats_parse);
-    if (sites == 0) {
-        logf("stats parse hook: no direct callers of the parser at %#lx",
-             (unsigned long)at);
-        return;
-    }
-    logf("stats parse hook: wrapped %zu direct call site(s) of the stats parser",
-         sites);
-}
-
 
 char const* client_state_name() {
     char const* state = client_game_state();
