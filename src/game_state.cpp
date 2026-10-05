@@ -158,6 +158,7 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
 
     static char const* last = nullptr;
     char const* now = client_game_state();
+
     if (auto_continue_wanted() && now != nullptr && std::strcmp(now, "Menu") == 0
         && g_auto_continue_armed.load() && g_set_target_state != nullptr) {
         g_auto_continue_armed.store(false);
@@ -170,8 +171,6 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
         }
     }
 
-    static char const* last = nullptr;
-    char const* now = client_game_state();
     if (now != nullptr && last != nullptr && now != last) {
         logf("gamestate: client %s -> %s", last, now);
         // Upstream's client resets on UnloadSession and loads again leaving
