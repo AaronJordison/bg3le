@@ -147,14 +147,27 @@ namespace {
 // are read once per process anyway.
 constexpr std::size_t kCacheableEntries = 8192;
 
-std::mutex g_lists_lock;
-std::map<std::string, std::vector<Entry>> g_lists;
+// Function-local statics rather than namespace globals: bg3le_init is a
+// constructor too, and .init_array runs it before pak.cpp's own dynamic
+// initialisation (preload.cpp is linked first) -- the stats mirror's
+// constructor-time pak_list call used to find this map unconstructed and
+// died in tree emplace. First use now builds it, whenever that is.
+std::mutex& lists_lock() {
+    static std::mutex lock;
+    return lock;
+}
+
+std::map<std::string, std::vector<Entry>>& lists() {
+    static std::map<std::string, std::vector<Entry>> lists;
+    return lists;
+}
 
 bool read_list(char const* path, std::vector<Entry>* out) {
     {
-        std::lock_guard<std::mutex> held(g_lists_lock);
-        auto cached = g_lists.find(path);
-        if (cached != g_lists.end()) {
+        std::lock_guard<std::mutex> held(lists_lock());
+        auto& cache = lists();
+        auto cached = cache.find(path);
+        if (cached != cache.end()) {
             *out = cached->second;
             return true;
         }
@@ -254,8 +267,8 @@ bool read_list(char const* path, std::vector<Entry>* out) {
 
     std::fclose(f);
     if (entries.size() <= kCacheableEntries) {
-        std::lock_guard<std::mutex> held(g_lists_lock);
-        g_lists.emplace(path, entries);
+        std::lock_guard<std::mutex> held(lists_lock());
+        lists().emplace(path, entries);
     }
     *out = std::move(entries);
     return true;
