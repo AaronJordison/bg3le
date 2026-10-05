@@ -121,19 +121,29 @@ bool auto_continue_wanted() {
     return on;
 }
 
-// Scan this process's readable+writable mappings for a word equal to the state's vtable
-// pointer; the object begins at that word. Bounded so a miss cannot stall the game.
+// Scan this process's ANONYMOUS readable+writable mappings for a word equal to the
+// state's vtable pointer; the object begins at that word. File- and device-backed regions
+// are skipped — reading a mapped device stalls the calling thread — and the total is
+// bounded so a miss cannot hang the game.
 void* find_state_object(std::uintptr_t vtable) {
     std::FILE* maps = std::fopen("/proc/self/maps", "r");
     if (maps == nullptr) return nullptr;
     char line[512];
     std::size_t scanned = 0;
-    constexpr std::size_t kBudget = 768ull * 1024 * 1024;
+    constexpr std::size_t kBudget = 512ull * 1024 * 1024;
     while (std::fgets(line, sizeof line, maps) != nullptr && scanned < kBudget) {
-        unsigned long long start = 0, end = 0;
+        unsigned long long start = 0, end = 0, offset = 0, inode = 0;
+        unsigned dev_major = 0, dev_minor = 0;
         char perms[8] = {0};
-        if (std::sscanf(line, "%llx-%llx %7s", &start, &end, perms) != 3) continue;
+        int used = 0;
+        if (std::sscanf(line, "%llx-%llx %7s %llx %x:%x %llu %n",
+                        &start, &end, perms, &offset, &dev_major, &dev_minor, &inode,
+                        &used) < 7) {
+            continue;
+        }
         if (perms[0] != 'r' || perms[1] != 'w') continue;
+        // A non-zero device/inode means a file or device mapping; skip it.
+        if (dev_major != 0 || dev_minor != 0 || inode != 0) continue;
         const std::size_t len = (std::size_t)(end - start);
         if (len == 0 || len > kBudget) continue;
         auto* p = reinterpret_cast<unsigned char const*>(start);
