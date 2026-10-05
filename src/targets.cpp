@@ -36,6 +36,8 @@ BG3LE_TARGET(MachineUpdate,
              resolve_code(Sig{"MachineUpdate", 0x2d1d9f0, "41 56 53 50 80 7f 08 00 75 08 48 83 c4 08"}))
 BG3LE_TARGET(StringKeysManagerLoad,
              resolve_code(Sig{"StringKeysManagerLoad", 0x2f9bb42, "48 8b 35 ?? ?? ?? ?? 31 d2 89 c8 f7 76 18 48 c1 e2 03"}))
+BG3LE_TARGET(StatsParse,
+             resolve_code(Sig{"StatsParse", 0x2fd4190, "55 41 57 41 56 41 55 41 54 53 48 81 ec 68 33 04 00 48 89 fd 48 81 c7 c0 00 00 00 48 89 f3"}))
 BG3LE_TARGET(MakeSet,
              resolve_code(Sig{"MakeSet", 0x2fd0750, "55 41 57 41 56 41 55 41 54 53 48 83 ec 28 48 89 fb 8b 7e 20"}))
 BG3LE_TARGET(SplitGroups,

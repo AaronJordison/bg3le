@@ -25,6 +25,8 @@ std::uintptr_t FileReaderCtor();
 std::uintptr_t WwiseSetSwitch();
 // stats functor parser
 std::uintptr_t ParseFunctor();
+// the stats parser -- the parse half every context's stats load runs through
+std::uintptr_t StatsParse();
 // the path step
 std::uintptr_t PathStep();
 // SurfaceManager::AddAction

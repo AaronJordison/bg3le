@@ -33,6 +33,9 @@ void lua_load_mods();
 // Fires the StatsLoaded event in both contexts at stats-load time (upstream's
 // RPGStats::Load timing), before a session is built. Idempotent per rebuild.
 void lua_fire_stats_loaded();
+// Fires StatsLoaded in both contexts even when the per-context identity
+// check would call the stats old -- the parser completing is a load.
+void lua_fire_stats_loaded_now();
 
 // Evaluates a chunk, returning its stringified results or the error text.
 // Must be called from the story thread.
