@@ -355,8 +355,11 @@ add_library(bg3le SHARED
     # need not have liblz4, and a missing DT_NEEDED would stop bg3le loading
     # at all. See vendor/NOTICE.md.
     external/lz4/lz4.c
+    # zstd's single-file decompressor, vendored for the same reason.
+    external/zstd/zstddeclib.c
 )
 set_source_files_properties(external/lz4/lz4.c PROPERTIES COMPILE_FLAGS -w)
+set_source_files_properties(external/zstd/zstddeclib.c PROPERTIES COMPILE_FLAGS -w)
 # The version plugins see in bg3le_host, from git at configure time.
 execute_process(COMMAND git describe --tags --always --dirty
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -388,7 +391,7 @@ add_custom_command(
 set_source_files_properties(src/builtin_lua.cpp PROPERTIES
     OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/generated/builtin_lua.inc)
 target_sources(bg3le PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/builtin_lua.inc)
-target_include_directories(bg3le PRIVATE external/lz4
+target_include_directories(bg3le PRIVATE external/lz4 external/zstd
     ${EXTERNAL}/glm ${CMAKE_CURRENT_BINARY_DIR}/generated)
 # vulkan and SDL2 resolve from the host process, which has both loaded before
 # bg3le is.
@@ -433,5 +436,6 @@ add_executable(memgrep tools/memgrep.c)
 target_compile_options(memgrep PRIVATE -Wno-unused-command-line-argument)
 
 add_executable(modsettings tools/modsettings.cpp src/pak.cpp
-               src/inflate.cpp src/log.cpp external/lz4/lz4.c)
-target_include_directories(modsettings PRIVATE external/lz4 src)
+               src/inflate.cpp src/log.cpp external/lz4/lz4.c
+               external/zstd/zstddeclib.c)
+target_include_directories(modsettings PRIVATE external/lz4 external/zstd src)

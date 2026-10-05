@@ -138,6 +138,11 @@ backtrace matched the mapped chain exactly: Steam wrapper `0x6aa119c`,
 manager `0x50786ef`, client `ProcessMsg` `0x34b267f`. The control run with
 the patch off showed the badges and produced no `SetAchievement` line.
 
+The current patch, on `HasCustomMods` since 2026-09-28, was validated live on
+2026-10-05: with mods loaded, earning Jack-of-all-Trades logged
+`ISteamUserStats::SetAchievement(..., "BG3_Quest16") -> true` and Steam
+showed the toast.
+
 ## Updating for a new binary
 
 When a game update moves the code, the patch refuses itself (the
