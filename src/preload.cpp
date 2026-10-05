@@ -38,6 +38,7 @@ namespace bg3le { void install_entity_trace_hook(); }
 #include "lua_host.h"
 #include "osi.h"
 #include "fast_alloc.h"
+#include "stats_mirror.h"
 
 namespace bg3le {
 void install_path_override_hook();
@@ -1370,6 +1371,12 @@ __attribute__((constructor)) static void bg3le_init() {
     if (!bg3le::host_is_game()) return;
 
     cleanup_sanity_check();
+    // Mods' compressed stats entries never parse from the archive — the
+    // engine hands the parser the stored bytes raw — so the mirror writes
+    // every enabled mod's own stats files loose under Data, where the
+    // engine's own preference finds them. Before main, so the engine's
+    // file caches are built after these exist.
+    bg3le::mirror_mod_stats();
     // Before main and the fork, so load caches see it.
     bg3le::ensure_achievement_gate_patch();
 

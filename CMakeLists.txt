@@ -344,6 +344,7 @@ add_library(bg3le SHARED
     src/inflate.cpp
     src/pak.cpp
     src/game_files.cpp
+    src/stats_mirror.cpp
     src/sdl_forward.cpp
     src/math.cpp
     src/ext_libs.cpp
