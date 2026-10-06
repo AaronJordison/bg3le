@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.3.0 (2026-10-06)
+
+- MCM and other ImGui windows are smooth again on Linux. Input the overlay keeps from the game was hidden by
+  telling the game its event queue was empty, as upstream does; Linux delivers every pointer motion (Windows
+  coalesces them), so with the cursor over a window the game took one event a frame, the rest backed up, and the
+  overlay skipped frames. The kept events are now skipped over instead.
+- Fixed a crash in the NVIDIA driver opening MCM (`ImGui_ImplVulkan_AddTexture`): bg3le now tracks the game's
+  image views and refuses to draw a texture whose view is not live, logging which one, instead of handing the driver
+  a bad handle.
+- Enum fields on objects and components are upstream's `EnumValue`s (`Label`, `Value`, `EnumName`), equal to and
+  ordered against their label or number, their label as a table key, and their label in JSON and `Serialize`.
+  Progression Preview read `DiceValue.Label`. Two small changes to the Lua fork make the comparisons and keys work;
+  see `external/lua/README.bg3le`.
+- `getmetatable` on an entity gives `"EntityProxy"`, as upstream's does; FocusCore's character test (EasyCheat)
+  depended on it, so EasyCheat's party, camp and unrecruited lists were empty and teleporting spammed errors.
+- The server now gets `GameStateChanged` too (LoadSession, Sync, Running, Save, ...), and `Ext.Utils.GetGameState`
+  reports the server's state there. Bag of Holding Reforged builds its state on Running.
+- Every context's `StatsLoaded` comes before any `SessionLoaded`, as upstream's do. UAWarCaster creates its statuses
+  in a client `StatsLoaded` that the server checks for.
+- `Ext.Entity.HandleToUuid` takes an entity (EasyCheat via AahzLib); lists with holes are written as upstream does,
+  skipping the hole (Subclass Compatibility Framework's spell lists); upstream's legacy field names (`field_1` for
+  `Controller` and the rest) resolve again (Auto-Sorting Hotbar); the `Tick` event's time carries `Ticks`
+  (Mazzle's EZ-Documentation).
+- Loading is faster: a session load with this setup went from about 60 s to 30 s. `Ext.Stats.Create` no longer
+  rebuilds the stats index, stat reads skip most of their fault-tolerant memory reads, functor attributes read
+  lazily, and class field tables are built once.
+- Corrected mod archives are now a few kilobytes on any filesystem: the copy holds only the changed files and its
+  file list, and the original is read as its second part. Copies of the previous format and of archives no longer
+  installed are removed. A bare file name or a relative Lua path outside the mod's own `ScriptExtender/Lua` is no
+  longer taken for a reference (Mazzle's EZ-Documentation keeps a `config.json` under `Ext.IO`).
+
 ## v0.2.6 (2026-10-06)
 
 - Mod archives are corrected for two things the native build trips over and Windows does not, by reading a fixed
