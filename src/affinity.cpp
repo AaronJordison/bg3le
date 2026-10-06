@@ -19,8 +19,11 @@
 // hooked sched_setaffinity and pthread_setaffinity_np, measured as doing
 // nothing, and was reverted -- but the engine sets its masks through
 // pthread_attr_setaffinity_np before pthread_create, so every thread that
-// mattered stayed pinned while the hook reported success. All three are
-// interposed here; the attribute one is the one that does the work.
+// mattered stayed pinned while the hook reported success. Both pthread calls
+// are interposed here; the attribute one is the one that does the work.
+//
+// sched_setaffinity is left alone: only Wwise's threads call it, and widening
+// them crashed a Steam Deck in JobManager_dispatchMultiple at startup.
 //
 // BG3LE_AFFINITY=off disables this.
 
@@ -89,7 +92,6 @@ bool widen(const cpu_set_t* mask, std::size_t size, cpu_set_t* out,
     return true;
 }
 
-using SchedFn = int (*)(pid_t, size_t, const cpu_set_t*);
 using ThreadFn = int (*)(pthread_t, size_t, const cpu_set_t*);
 using AttrFn = int (*)(pthread_attr_t*, size_t, const cpu_set_t*);
 
@@ -131,14 +133,3 @@ extern "C" int pthread_setaffinity_np(pthread_t thread, size_t cpusetsize,
     return real(thread, cpusetsize, mask);
 }
 
-extern "C" int sched_setaffinity(pid_t pid, size_t cpusetsize,
-                                 const cpu_set_t* mask) {
-    static const auto real = next<SchedFn>("sched_setaffinity");
-    if (real == nullptr) return -1;
-
-    cpu_set_t all;
-    if (widen(mask, cpusetsize, &all, "sched_setaffinity")) {
-        return real(pid, cpusetsize, &all);
-    }
-    return real(pid, cpusetsize, mask);
-}
