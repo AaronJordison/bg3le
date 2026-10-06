@@ -17,6 +17,9 @@ void hdr_swapchain_created(VkDevice device, VkPhysicalDevice physical,
 void hdr_swapchain_released();
 VkRenderPass hdr_overlay_pass();
 void hdr_record(VkCommandBuffer cmd, std::uint32_t index, ImDrawData* draw);
+// src/vulkan_forward.cpp tracks the device's image views.
+bool vk_image_view_live(VkImageView view);
+std::size_t vk_image_views_tracked();
 }
 
 BEGIN_SE()
@@ -265,6 +268,14 @@ public:
         auto view = descriptor->Vulkan.Views[0]->View;
         if (!view) return {};
 
+        // bg3le: a handle the driver does not know crashes it on first draw.
+        if (!bg3le::vk_image_view_live((VkImageView)view)) {
+            ERR("Texture %p (%ux%u) has image view %p, which is not a live view (%zu are); not drawing it",
+                (void*)descriptor, descriptor->Vulkan.ImageData.Width, descriptor->Vulkan.ImageData.Height,
+                (void*)view, bg3le::vk_image_views_tracked());
+            return {};
+        }
+
         if (textures_ > TextureSoftCap) {
             if (!textureLimitWarningShown_) {
                 ERR("UI texture limit reached. Newly loaded textures may not load or render correctly");
@@ -298,6 +309,11 @@ public:
     std::optional<ImTextureID> BindTexture(TextureOpaqueHandle opaqueHandle) override
     {
         auto imageView = static_cast<VkImageView>(opaqueHandle);
+        // bg3le: the view may have been destroyed since it was registered.
+        if (!bg3le::vk_image_view_live(imageView)) {
+            ERR("Image view %p is no longer live; not drawing it", (void*)imageView);
+            return {};
+        }
         auto desc = textureDescriptors_.get_or_default(imageView, 0);
         if (!desc) {
             desc = ImGui_ImplVulkan_AddTexture(sampler_, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

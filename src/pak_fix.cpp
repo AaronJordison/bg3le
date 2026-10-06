@@ -46,7 +46,7 @@ namespace bg3le {
 namespace {
 
 // Part of every cached copy's name: bump it when the fixes change.
-constexpr char kFormat[] = "1";
+constexpr char kFormat[] = "3";
 constexpr std::size_t kMaxScanBytes = 32u << 20;
 constexpr std::uint64_t kAlign = 64;
 
@@ -81,6 +81,11 @@ std::string extension(std::string_view name) {
     const std::size_t dot = leaf.rfind('.');
     if (dot == std::string_view::npos || dot == 0) return {};
     return lowered(leaf.substr(dot + 1));
+}
+
+// "<name>_<n>.pak" for "<name>.pak", LSPK's name for part n.
+std::string part_path(std::string_view pak, unsigned n) {
+    return std::string(pak.substr(0, pak.size() - 4)) + "_" + std::to_string(n) + ".pak";
 }
 
 bool is_text(std::string const& ext) {
@@ -464,9 +469,14 @@ private:
         }
         const bool slash = key.find('/') != std::string::npos;
         const bool dot = key.find('.') != std::string::npos;
-        if (slash || dot) {
+        std::string const& file = listing_.Files[contents_[c].File].Name;
+        // Only a path with a directory is matched by its tail: a bare name is
+        // too often no file of this archive -- MazzleDocs' "config.json" is
+        // one it keeps under Ext.IO, not its ScriptExtender/Config.json. In
+        // Lua the tail must also be where Ext.Require looks: its own Lua root.
+        if (slash) {
             i = unique(suffixes_, key);
-            if (i != SIZE_MAX) {
+            if (i != SIZE_MAX && required_from(file, names_[i], len)) {
                 link(c, pos, i, names_[i].size() - len, names_[i].size());
                 return;
             }
@@ -474,7 +484,6 @@ private:
 
         // GUI metadata keys are ".png" paths under the metadata's directory;
         // the engine loads the ".DDS" beside them.
-        std::string const& file = listing_.Files[contents_[c].File].Name;
         if (iends_with(key, ".png") && gui_metadata(file)) {
             std::string const dir = lowered(file.substr(0, file.rfind('/')));
             i = unique(full_, dir + "/" + key.substr(0, len - 4) + ".dds");
@@ -492,6 +501,20 @@ private:
             for (std::size_t e : it->second) unite(stems_[it->second[0]], stems_[e]);
             add(stems_[it->second[0]], {(int)c, 0, pos, len});
         }
+    }
+
+    // Whether a reference from `from` covering the last `len` bytes of entry
+    // `name` is one: anywhere outside Lua, and in Lua only the path below the
+    // mod's ScriptExtender/Lua, which is what Ext.Require resolves against.
+    static bool required_from(std::string const& from, std::string const& name,
+                              std::size_t len) {
+        if (extension(from) != "lua") return true;
+        std::string const lower = lowered(from);
+        static constexpr std::string_view kRoot = "/scriptextender/lua/";
+        const std::size_t at = lower.find(kRoot);
+        if (at == std::string::npos) return false;
+        const std::size_t root = at + kRoot.size();
+        return name.size() == root + len && lowered(name).compare(0, root, lower, 0, root) == 0;
     }
 
     // Quoted strings, with the attribute or stats field they belong to.
@@ -639,8 +662,29 @@ int pak_fix_build(char const* in, char const* out,
     const int count = (int)(fixes->size() - before);
     if (replaced.empty() && !renamed) return count;
 
+    // A v18 copy is two parts: the header, the changed files and the list in
+    // this file, and the original, untouched, as part 1 -- so it costs a few
+    // kilobytes on any filesystem rather than a copy of the whole archive.
+    // 15 and 16 keep the full copy.
+    const bool split = listing.Version == 18;
     std::string const tmp = std::string(out) + ".tmp";
-    if (!copy_file(in, tmp.c_str())) return -1;
+    if (split) {
+        std::FILE* r = std::fopen(in, "rb");
+        if (r == nullptr) return -1;
+        char header[40];
+        const bool got = std::fread(header, 1, sizeof(header), r) == sizeof(header);
+        std::fclose(r);
+        if (!got) return -1;
+        const std::uint16_t parts = 2;
+        std::memcpy(header + 38, &parts, sizeof(parts));
+        std::FILE* h = std::fopen(tmp.c_str(), "wb");
+        if (h == nullptr) return -1;
+        const bool wrote = std::fwrite(header, 1, sizeof(header), h) == sizeof(header);
+        if (std::fclose(h) != 0 || !wrote) return -1;
+        for (PakFile& file : listing.Files) file.Part = 1;
+    } else if (!copy_file(in, tmp.c_str())) {
+        return -1;
+    }
     std::FILE* w = std::fopen(tmp.c_str(), "r+b");
     if (w == nullptr) return -1;
     bool ok = std::fseek(w, 0, SEEK_END) == 0;
@@ -652,6 +696,7 @@ int pak_fix_build(char const* in, char const* out,
         at += pad;
         ok = ok && std::fwrite(data.data(), 1, data.size(), w) == data.size();
         PakFile& file = listing.Files[i];
+        file.Part = 0;
         file.Offset = at;
         file.SizeOnDisk = data.size();
         file.UncompressedSize = 0;
@@ -670,6 +715,15 @@ int pak_fix_build(char const* in, char const* out,
         std::remove(tmp.c_str());
         return -1;
     }
+    if (split) {
+        // Part 1 beside it, so the copy reads on its own too; the game asks
+        // for the original's name and is answered by pak_fix_redirect.
+        std::string const part = part_path(out, 1);
+        char original[4096];
+        if (::realpath(in, original) == nullptr) return -1;
+        ::unlink(part.c_str());
+        if (::symlink(original, part.c_str()) != 0) return -1;
+    }
     return count;
 }
 
@@ -678,6 +732,9 @@ namespace {
 thread_local bool t_bypass = false;
 std::mutex g_lock;
 std::map<std::string, std::string> g_redirects;
+// "<Mods>/<name>_1.pak", which no one has on disk, to "<Mods>/<name>.pak":
+// part 1 of a split copy is the original.
+std::map<std::string, std::string> g_parts;
 
 // "<profile>/Mods/<name>.pak", where the profile is "Baldur's Gate 3".
 bool mod_archive(std::string_view path) {
@@ -792,6 +849,103 @@ std::string prepare(std::string const& path) {
     return copy;
 }
 
+// Whether a copy is split, from the part count in its header.
+bool is_split(std::string const& copy) {
+    std::FILE* f = std::fopen(copy.c_str(), "rb");
+    if (f == nullptr) return false;
+    unsigned char header[40];
+    const bool got = std::fread(header, 1, sizeof(header), f) == sizeof(header);
+    std::fclose(f);
+    std::uint16_t parts = 0;
+    if (got) std::memcpy(&parts, header + 38, sizeof(parts));
+    return got && parts == 2;
+}
+
+// "<name>.pak" if `path` names part n > 0 of it, else empty.
+std::string archive_of_part(std::string_view path) {
+    const std::size_t under = path.rfind('_');
+    if (under == std::string_view::npos || under + 1 >= path.size() - 4) return {};
+    for (std::size_t i = under + 1; i < path.size() - 4; ++i) {
+        if (path[i] < '0' || path[i] > '9') return {};
+    }
+    return std::string(path.substr(0, under)) + ".pak";
+}
+
+void remove_tree(std::string const& dir) {
+    if (DIR* d = ::opendir(dir.c_str())) {
+        while (dirent* e = ::readdir(d)) {
+            std::string const n = e->d_name;
+            if (n != "." && n != "..") ::unlink((dir + "/" + n).c_str());
+        }
+        ::closedir(d);
+    }
+    ::rmdir(dir.c_str());
+}
+
+// Once a run: copies left by an earlier format (the full copies of format 1
+// among them), and every copy of an archive no longer installed.
+void sweep(std::string const& mods) {
+    std::string const root = cache_directory();
+    DIR* d = root.empty() ? nullptr : ::opendir(root.c_str());
+    if (d == nullptr) return;
+    std::string const current = std::string("-f") + kFormat;
+    std::size_t gone = 0;
+    while (dirent* e = ::readdir(d)) {
+        std::string const n = e->d_name;
+        if (n == "." || n == "..") continue;
+        std::string const dir = root + "/" + n;
+        if (::access((mods + "/" + n).c_str(), F_OK) != 0) {
+            remove_tree(dir);
+            ++gone;
+            continue;
+        }
+        DIR* inner = ::opendir(dir.c_str());
+        if (inner == nullptr) continue;
+        while (dirent* f = ::readdir(inner)) {
+            std::string const file = f->d_name;
+            if (file == "." || file == "..") continue;
+            const std::size_t at = file.find(current);
+            const char next = at == std::string::npos ? '\0' : file[at + current.size()];
+            if (next != '.' && next != '_') {
+                ::unlink((dir + "/" + file).c_str());
+                ++gone;
+            }
+        }
+        ::closedir(inner);
+    }
+    ::closedir(d);
+    if (gone != 0) logf("pakfix: removed %zu stale cache entries", gone);
+}
+
+std::string redirect_locked(std::string const& path) {
+    auto part = g_parts.find(path);
+    if (part != g_parts.end()) return part->second;
+    auto it = g_redirects.find(path);
+    if (it != g_redirects.end()) return it->second;
+
+    static bool swept = false;
+    if (!swept) {
+        swept = true;
+        sweep(path.substr(0, path.rfind('/')));
+    }
+
+    // A part of a split copy: no such file exists, so it can only be that.
+    std::string const archive = archive_of_part(path);
+    if (!archive.empty() && ::access(path.c_str(), F_OK) != 0
+        && ::access(archive.c_str(), F_OK) == 0) {
+        redirect_locked(archive);
+        part = g_parts.find(path);
+        std::string const original = part != g_parts.end() ? part->second : std::string();
+        g_redirects.emplace(path, original);
+        return original;
+    }
+
+    std::string copy = prepare(path);
+    if (!copy.empty() && is_split(copy)) g_parts.emplace(part_path(path, 1), path);
+    g_redirects.emplace(path, copy);
+    return copy;
+}
+
 bool enabled() {
     static const bool on = [] {
         char const* v = std::getenv("BG3LE_PAKFIX");
@@ -807,13 +961,9 @@ std::string pak_fix_redirect(char const* path) {
         return {};
     }
     std::lock_guard<std::mutex> held(g_lock);
-    auto it = g_redirects.find(path);
-    if (it != g_redirects.end()) return it->second;
-
     t_bypass = true;
-    std::string copy = prepare(path);
+    std::string copy = redirect_locked(path);
     t_bypass = false;
-    g_redirects.emplace(path, copy);
     return copy;
 }
 

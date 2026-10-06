@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "pak_fix.h"
 
@@ -79,6 +80,18 @@ extern "C" FILE* fopen(char const* path, char const* mode) {
 extern "C" FILE* fopen64(char const* path, char const* mode) {
     static const auto real = next<FopenFn>("fopen64");
     return fopen_via(real, path, mode);
+}
+
+// The game checks for files with this; part 1 of a split copy is not on disk
+// under the name it asks for.
+extern "C" int access(char const* path, int mode) __THROW {
+    using Fn = int (*)(char const*, int);
+    static const auto real = next<Fn>("access");
+    if ((mode & W_OK) == 0) {
+        std::string const copy = bg3le::pak_fix_redirect(path);
+        if (!copy.empty()) return real(copy.c_str(), mode);
+    }
+    return real(path, mode);
 }
 
 // Only a compatibility symbol in glibc 2.33 and later, which the game, built

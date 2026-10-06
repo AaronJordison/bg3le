@@ -83,10 +83,10 @@ void push_saved_vars(lua_State* L,
     }
 }
 
-// Ext._Internal.GameState() -- the client state in the client context, as
-// upstream's Ext.Utils.GetGameState reports; nil where it is not known.
+// Ext._Internal.GameState() -- this context's state machine, as upstream's
+// Ext.Utils.GetGameState reports; nil where it is not known.
 int l_game_state(lua_State* L) {
-    char const* state = in_client_state() ? client_game_state() : nullptr;
+    char const* state = in_client_state() ? client_game_state() : server_game_state();
     if (state == nullptr) {
         lua_pushnil(L);
     } else {
@@ -1401,6 +1401,11 @@ extern "C" bool bg3le_meta_field(void const* handle, const char* name,
 extern "C" std::size_t bg3le_meta_fields(void const* handle, const char** names,
                                          std::uint8_t* kinds,
                                          std::size_t capacity);
+extern "C" std::size_t bg3le_meta_legacy_at(void const* handle,
+                                            char const* path,
+                                            char const** names,
+                                            std::uint8_t* kinds,
+                                            std::size_t capacity);
 extern "C" std::size_t bg3le_meta_fields_at(void const* handle,
                                             const char* path,
                                             const char** names,
@@ -2000,11 +2005,52 @@ bool write_field(lua_State* L, int index, void* address, FieldKind kind,
     }
 }
 
+// A copy of the table at `index`, pushed, with its values in the order
+// upstream's iterate() visits them: integer keys ascending, then the rest.
+// Holes close up, as they do there; walking 1..#t stopped at the first nil.
+int push_packed(lua_State* L, int index) {
+    index = lua_absindex(L, index);
+    std::vector<lua_Integer> keys;
+    bool others = false;
+    lua_pushnil(L);
+    while (lua_next(L, index) != 0) {
+        if (lua_isinteger(L, -2)) keys.push_back(lua_tointeger(L, -2));
+        else others = true;
+        lua_pop(L, 1);
+    }
+    std::sort(keys.begin(), keys.end());
+    lua_createtable(L, (int)keys.size(), 0);
+    const int out = lua_gettop(L);
+    lua_Integer n = 0;
+    for (lua_Integer key : keys) {
+        lua_rawgeti(L, index, key);
+        lua_rawseti(L, out, ++n);
+    }
+    if (others) {
+        lua_pushnil(L);
+        while (lua_next(L, index) != 0) {
+            if (!lua_isinteger(L, -2)) {
+                lua_pushvalue(L, -1);
+                lua_rawseti(L, out, ++n);
+            }
+            lua_pop(L, 1);
+        }
+    }
+    return out;
+}
+
 // A whole array assigned from a Lua list, as upstream's Array setter does:
 // the array becomes that many elements, each written as an element is.
 bool assign_array(lua_State* L, int index, void const* meta, const char* path,
                   void* base, FieldKind kind) {
     if (kind != FieldKind::DynArray || !lua_istable(L, index)) return false;
+    const int packed = push_packed(L, index);
+    struct Pop {
+        lua_State* L;
+        int at;
+        ~Pop() { lua_remove(L, at); }
+    } pop{L, packed};
+    index = packed;
     const lua_Integer n = luaL_len(L, index);
     void* data = nullptr;
     std::uint16_t elemSize = 0;
@@ -2030,6 +2076,16 @@ void enum_arg_in_place(lua_State* L, int index, void const* meta,
     const char* label = nullptr;
     std::uint64_t value = 0;
     bool isBitmask = false;
+    index = lua_absindex(L, index);
+    // An EnumValue stands for its label.
+    if (lua_type(L, index) == LUA_TUSERDATA && lua_getmetatable(L, index)) {
+        if (lua_getfield(L, -1, "__bg3leEnumLabel") == LUA_TSTRING) {
+            lua_replace(L, index);
+            lua_pop(L, 1);
+        } else {
+            lua_pop(L, 2);
+        }
+    }
     const int type = lua_type(L, index);
     if ((type != LUA_TSTRING && type != LUA_TTABLE)
         || !bg3le_meta_enum_label(meta, path, 0, &label, &value, &isBitmask)) {
@@ -2077,6 +2133,29 @@ void enum_arg_in_place(lua_State* L, int index, void const* meta,
 //
 // A value with no matching label is pushed as the number, so an unmapped bit
 // is visible rather than dropped.
+extern "C" char const* bg3le_meta_enum_lua_name(void const* handle, char const* path);
+
+// An enum value as upstream pushes it: an EnumValue (Ext._Internal.EnumValue
+// in the prelude), or the label where the prelude has none yet.
+void push_enum_value(lua_State* L, void const* meta, const char* path,
+                     const char* label, std::uint64_t value) {
+    char const* name = bg3le_meta_enum_lua_name(meta, path);
+    const int top = lua_gettop(L);
+    if (name != nullptr && lua_getglobal(L, "Ext") == LUA_TTABLE
+        && lua_getfield(L, -1, "_Internal") == LUA_TTABLE
+        && lua_getfield(L, -1, "EnumValue") == LUA_TFUNCTION) {
+        lua_pushstring(L, name);
+        lua_pushstring(L, label);
+        lua_pushinteger(L, (lua_Integer)value);
+        lua_call(L, 3, 1);
+        lua_replace(L, top + 1);
+        lua_settop(L, top + 1);
+        return;
+    }
+    lua_settop(L, top);
+    lua_pushstring(L, label);
+}
+
 bool push_enum(lua_State* L, void const* meta, const char* path,
                std::uint64_t raw) {
     const char* label = nullptr;
@@ -2091,7 +2170,7 @@ bool push_enum(lua_State* L, void const* meta, const char* path,
              bg3le_meta_enum_label(meta, path, i, &label, &value, &isBitmask);
              ++i) {
             if (value == raw) {
-                lua_pushstring(L, label);
+                push_enum_value(L, meta, path, label, value);
                 return true;
             }
         }
@@ -2917,6 +2996,24 @@ bool subject_from_object(lua_State* L, int addressIdx, int classIdx,
 // Ext._Internal.ObjectFields(class [, path]) -> { field = kind, ... }
 extern "C" bool bg3le_meta_path_is_struct(void const* handle, char const* path);
 
+// Gives the field table on top a metatable answering upstream's legacy names
+// (field_1 for Controller): indexing finds them, pairs and next do not.
+void attach_legacy_names(lua_State* L, void const* meta, const char* path) {
+    constexpr std::size_t kMax = 64;
+    const char* names[kMax];
+    std::uint8_t kinds[kMax];
+    const std::size_t n = bg3le_meta_legacy_at(meta, path, names, kinds, kMax);
+    if (n == 0) return;
+    lua_createtable(L, 0, 1);
+    lua_createtable(L, 0, (int)n);
+    for (std::size_t i = 0; i < n; ++i) {
+        lua_pushstring(L, field_kind_name((FieldKind)kinds[i]));
+        lua_setfield(L, -2, names[i]);
+    }
+    lua_setfield(L, -2, "__index");
+    lua_setmetatable(L, -2);
+}
+
 int l_object_fields(lua_State* L) {
     const char* className = luaL_checkstring(L, 1);
     const char* path = luaL_optstring(L, 2, nullptr);
@@ -2945,6 +3042,7 @@ int l_object_fields(lua_State* L) {
         lua_pushstring(L, field_kind_name((FieldKind)kinds[i]));
         lua_setfield(L, -2, names[i]);
     }
+    attach_legacy_names(L, meta, path);
     return 1;
 }
 
@@ -3058,6 +3156,7 @@ int assign_scalar_set(lua_State* L, Subject const& subject,
                         className, path, field_kind_name(elemKind));
         return 2;
     }
+    tableIdx = push_packed(L, tableIdx);
     const lua_Integer count = luaL_len(L, tableIdx);
     std::vector<unsigned char> bytes(stride * (std::size_t)(count > 0 ? count : 0));
     // An enum's labels are taken, as a field of one takes them.
@@ -3124,6 +3223,7 @@ int assign_set(lua_State* L, Subject const& subject, const char* className,
     }
 
     std::vector<unsigned int> ids;
+    tableIdx = push_packed(L, tableIdx);
     const lua_Integer count = luaL_len(L, tableIdx);
     ids.reserve((std::size_t)(count > 0 ? count : 0));
 
@@ -5589,6 +5689,8 @@ int l_stats_requirements(lua_State* L) {
 int l_stats_requirements_set(lua_State* L) {
     auto const* object = (void const*)(std::uintptr_t)luaL_checkinteger(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
+    push_packed(L, 2);
+    lua_replace(L, 2);
     const lua_Integer n = luaL_len(L, 2);
     std::vector<RequirementIn> entries((std::size_t)(n > 0 ? n : 0));
 
@@ -6095,6 +6197,8 @@ int l_stats_combo_set(lua_State* L) {
     auto* object = (void*)(std::uintptr_t)luaL_checkinteger(L, 1);
     const int which = (int)luaL_checkinteger(L, 2);
     luaL_checktype(L, 3, LUA_TTABLE);
+    push_packed(L, 3);
+    lua_replace(L, 3);
     const lua_Integer n = luaL_len(L, 3);
     std::vector<char const*> names;
     for (lua_Integer i = 1; i <= n; ++i) {
@@ -6580,6 +6684,7 @@ int l_component_fields(lua_State* L) {
         lua_pushstring(L, field_kind_name((FieldKind)kinds[i]));
         lua_setfield(L, -2, names[i]);
     }
+    attach_legacy_names(L, meta, path);
     lua_pushinteger(L, (lua_Integer)bg3le_meta_component_size(meta));
     return 2;
 }
@@ -6843,8 +6948,32 @@ int object_proxy_tostring(lua_State* L) {
     return 1;
 }
 
+// getmetatable as Norbyte's Lua fork has it: one of bg3le's objects answers
+// with its type name ("EntityProxy" for an entity), as upstream's C++
+// objects do -- FocusCore's character test compares against that. Anything
+// else, the stock behaviour.
+int l_getmetatable(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (!lua_getmetatable(L, 1)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    if (lua_type(L, 1) == LUA_TUSERDATA) {
+        const bool proxy = lua_getfield(L, -1, "__bg3leProxy") == LUA_TBOOLEAN
+                           && lua_toboolean(L, -1);
+        lua_pop(L, 1);
+        if (proxy && lua_getfield(L, -1, "__name") == LUA_TSTRING) return 1;
+        if (proxy) lua_pop(L, 1);
+    }
+    luaL_getmetafield(L, 1, "__metatable");
+    return 1;
+}
+
 int l_new_object_proxy(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
+    // Marks it for getmetatable, which names it as upstream's fork does.
+    lua_pushboolean(L, 1);
+    lua_setfield(L, 1, "__bg3leProxy");
     if (lua_getfield(L, 1, "__tostring") == LUA_TNIL) {
         lua_pushcfunction(L, object_proxy_tostring);
         lua_setfield(L, 1, "__tostring");
@@ -7593,6 +7722,8 @@ void build_state(bool client) {
                          &cpp_get_metatable, &cpp_finalize, &cpp_canonicalize);
     lua_setup_strcache(g_lua, &cache_string, &release_string);
     luaL_openlibs(g_lua);
+    lua_pushcfunction(g_lua, l_getmetatable);
+    lua_setglobal(g_lua, "getmetatable");
     // Ext.Log and Ext.Json are pure Lua/C and need no engine reflection, so
     // the helpers mods actually use every day can be compatible now. Shapes
     // and aliases follow BG3SE's BuiltinLibrary.lua.
@@ -8321,6 +8452,126 @@ Ext._Internal.RawLoad = load
 Ext._Internal.SetHook = debug.sethook
 Ext._Internal.OpenFile = io.open
 Ext._Internal.Getenv = os.getenv
+-- The real metatable: getmetatable names bg3le's objects, as upstream's does.
+Ext._Internal.RawGetMetatable = debug.getmetatable
+
+-- Upstream's EnumValue (Lua/Shared/Proxies/LuaEnumValue.inl): Label, Value
+-- and EnumName, the label as its string, equal to and ordered against its
+-- label, its number or another value of the enum, and its label as a table
+-- key (the Lua fork's canonicalize_key). One per enum value, made on first
+-- read. Its __name is the enum's, which getmetatable and the type queries
+-- report.
+do
+  local made, values = {}, {}
+
+  -- The enum's label -> value, from the same tables Ext.Enums is built from.
+  local function labels_of(name)
+    local t = values[name]
+    if t ~= nil then return t end
+    t = {}
+    local i = 0
+    while true do
+      local label, value = Ext._Internal.EnumValueAt(name, i)
+      if label == nil then break end
+      t[label] = value
+      i = i + 1
+    end
+    values[name] = t
+    return t
+  end
+
+  -- What another operand is as a value of `name`, or nil.
+  local function as_value(name, other)
+    local t = type(other)
+    if t == "number" then return other end
+    if t == "string" then return labels_of(name)[other] end
+    if t == "userdata" then
+      local meta = Ext._Internal.RawGetMetatable(other)
+      if type(meta) == "table" and meta.__bg3leEnumName == name then
+        return meta.__bg3leEnumValue
+      end
+    end
+    return nil
+  end
+
+  local function operands(a, b)
+    local meta = Ext._Internal.RawGetMetatable(a)
+    if type(meta) ~= "table" or meta.__bg3leEnumName == nil then
+      meta = Ext._Internal.RawGetMetatable(b)
+    end
+    local name = meta.__bg3leEnumName
+    return as_value(name, a), as_value(name, b)
+  end
+
+  function Ext._Internal.EnumValue(name, label, value)
+    local byValue = made[name]
+    if byValue == nil then
+      byValue = {}
+      made[name] = byValue
+    end
+    local hit = byValue[value]
+    if hit ~= nil then return hit end
+
+    hit = Ext._Internal.NewObjectProxy({
+      __name = name,
+      __bg3leEnumName = name,
+      __bg3leEnumLabel = label,
+      __bg3leEnumValue = value,
+      __index = function(_, key)
+        if key == "Label" then return label end
+        if key == "Value" then return value end
+        if key == "EnumName" then return name end
+        error("Enum values have no property named '" .. tostring(key) .. "'", 2)
+      end,
+      __tostring = function() return label end,
+      __eq = function(a, b)
+        local x, y = operands(a, b)
+        return x ~= nil and x == y
+      end,
+      __lt = function(a, b)
+        local x, y = operands(a, b)
+        return x ~= nil and y ~= nil and x < y
+      end,
+      __le = function(a, b)
+        local x, y = operands(a, b)
+        return x ~= nil and y ~= nil and x <= y
+      end,
+    })
+    byValue[value] = hit
+    return hit
+  end
+
+  -- The label of an EnumValue, or nil for anything else.
+  function Ext._Internal.EnumLabelOf(v)
+    if type(v) ~= "userdata" then return nil end
+    local meta = Ext._Internal.RawGetMetatable(v)
+    return type(meta) == "table" and meta.__bg3leEnumLabel or nil
+  end
+end
+
+-- A class's field table is fixed when bg3le is built, so it is made once:
+-- building it per object was most of a template's cost (33,806 of them in
+-- GetAllRootTemplates). Callers only read it.
+do
+  local object_fields, component_fields = Ext._Internal.ObjectFields, Ext._Internal.ComponentFields
+  local by_class, by_component, sizes = {}, {}, {}
+  Ext._Internal.ObjectFields = function(class, path)
+    local key = class .. "\0" .. (path or "")
+    local hit = by_class[key]
+    if hit ~= nil then return hit end
+    local fields, err = object_fields(class, path)
+    if fields ~= nil then by_class[key] = fields end
+    return fields, err
+  end
+  Ext._Internal.ComponentFields = function(name, path)
+    local key = name .. "\0" .. (path or "")
+    local hit = by_component[key]
+    if hit ~= nil then return hit, sizes[key] end
+    local fields, size = component_fields(name, path)
+    if fields ~= nil then by_component[key], sizes[key] = fields, size end
+    return fields, size
+  end
+end
 
 -- _D is Ext.Json.Stringify, which is why strings come back quoted:
 -- _D(GetHostCharacter()) yields "<uuid>" while _P yields <uuid>.
@@ -8350,7 +8601,7 @@ end
 local function walkable(v)
   if type(v) == "table" then return true end
   if type(v) ~= "userdata" then return false end
-  local meta = getmetatable(v)
+  local meta = Ext._Internal.RawGetMetatable(v)
   return type(meta) == "table" and meta.__pairs ~= nil
 end
 Ext._Internal.Walkable = walkable
@@ -8366,7 +8617,7 @@ Ext._Internal.Walkable = walkable
 -- StringifyInternalTypes and an error without.
 
 local function proxy_meta(v)
-  local meta = getmetatable(v)
+  local meta = Ext._Internal.RawGetMetatable(v)
   if type(meta) == "table" and (meta.__pairs ~= nil or meta.__name ~= nil) then
     return meta
   end
@@ -8538,6 +8789,9 @@ stringify = function(v, indent, depth, ctx, out)
     out[#out + 1] = json_number(v)
   elseif t == "string" then
     out[#out + 1] = json_string(v)
+  elseif t == "userdata" and Ext._Internal.EnumLabelOf(v) ~= nil then
+    -- Upstream's TryStringifyLightCppObject: an enum value is its label.
+    out[#out + 1] = json_string(Ext._Internal.EnumLabelOf(v))
   elseif t == "table" or t == "userdata" then
     local meta = proxy_meta(v)
     if t == "table" and (meta == nil or meta.__pairs == nil) then
@@ -8788,6 +9042,10 @@ end
 function Ext._Internal.ClientStateChanged(from, to)
   Ext._Internal.FireEvent("GameStateChanged", { FromState = from, ToState = to })
 end
+
+-- esv::ScriptExtender::OnGameStateChanged's, from the server tick
+-- (lua_tick); BoHReforged builds its state on Running.
+Ext._Internal.ServerStateChanged = Ext._Internal.ClientStateChanged
 
 function Ext._Internal.AfterReset()
   Ext._Internal.FireEvent("ModuleResume")
@@ -9428,7 +9686,7 @@ function Ext.Types.GetObjectType(object)
   local t = type(object)
   if t ~= "table" and t ~= "userdata" then return nil end
   -- Only the objects bg3le tagged carry a type: its views, and entities.
-  local meta = getmetatable(object)
+  local meta = Ext._Internal.RawGetMetatable(object)
   if meta ~= nil and meta.__name ~= nil then return meta.__name end
   return nil
 end
@@ -9459,7 +9717,11 @@ local function value_type(object, base)
   if t == "userdata" and Ext._Internal.EntityProxyHandle(object) ~= nil then
     return "Entity"
   elseif t == "table" or t == "userdata" then
-    local meta = getmetatable(object)
+    local meta = Ext._Internal.RawGetMetatable(object)
+    -- An enum value: its enum's name, and "Enum" as the base, as upstream's.
+    if type(meta) == "table" and meta.__bg3leEnumName ~= nil then
+      return base and "Enum" or meta.__bg3leEnumName
+    end
     if type(meta) == "table" and type(meta.__name) == "string"
        and meta.__name ~= "EntityProxy" then
       return base and "CppObject" or meta.__name
@@ -9489,6 +9751,9 @@ end
 -- earlier version here stringified, which would have handed a mod a string
 -- where it expected a table.
 local function deep_plain(value, seen)
+  -- An enum value serializes as its label, as upstream's does.
+  local label = Ext._Internal.EnumLabelOf(value)
+  if label ~= nil then return label end
   if not Ext._Internal.Walkable(value) then return value end
   if seen[value] then return seen[value] end
 
@@ -9507,7 +9772,7 @@ end
 -- Upstream's Unserialize writes nested objects in place: a struct field by
 -- its fields, an array resized to the list, a map by its keys.
 local function unserialize_into(object, values)
-  local meta = getmetatable(object)
+  local meta = Ext._Internal.RawGetMetatable(object)
   local assign = type(meta) == "table" and meta.__bg3leAssign
   if assign then
     assign(values)
@@ -9594,7 +9859,7 @@ end
 
 function Ext.Types.GetHashSetValueAt(object, index)
   if not Ext._Internal.Walkable(object) then return nil end
-  local meta = getmetatable(object)
+  local meta = Ext._Internal.RawGetMetatable(object)
   if type(meta) == "table" and meta.__bg3leSetAt then
     return meta.__bg3leSetAt(index + 1)
   end
@@ -10760,7 +11025,7 @@ function Ext._Internal.FireEvent(name, params)
   local event = engine_events[name]
   if event == nil then return end
   params = params or {}
-  if getmetatable(params) == nil then
+  if Ext._Internal.RawGetMetatable(params) == nil then
     params.Name = params.Name or name
     if params.CanPreventAction == nil then params.CanPreventAction = false end
     if params.ActionPrevented == nil then params.ActionPrevented = false end
@@ -11240,7 +11505,7 @@ if Ext._Internal.IsClientState() then
   end
 
   local function unwrap(value)
-    if getmetatable(value) == UiObject then return ptr_of[value] end
+    if Ext._Internal.RawGetMetatable(value) == UiObject then return ptr_of[value] end
     return value
   end
 
@@ -11784,7 +12049,11 @@ function Ext._Internal.RunTimers()
   local now = Ext.Utils.MonotonicTime() / 1000.0
   local delta = last_tick ~= nil and (now - last_tick) or 0.0
   last_tick = now
-  Ext._Internal.FireEvent("Tick", { Time = { DeltaTime = delta, Time = now } })
+  -- Upstream's GameTime carries the tick count too (MazzleDocs reads it).
+  -- Kept on _Internal: the prelude has no top-level locals to spare.
+  Ext._Internal.TickCount = (Ext._Internal.TickCount or 0) + 1
+  Ext._Internal.FireEvent("Tick", { Time = { DeltaTime = delta, Time = now,
+    Ticks = Ext._Internal.TickCount } })
 
   local now = Ext.Timer.MonotonicTime()
   if first_tick == nil then first_tick = now end
@@ -12606,6 +12875,9 @@ local entity_meta = {
   end,
   -- What Ext.Types.GetObjectType reports, as upstream's GetTypeName does.
   __name = "EntityProxy",
+  -- And what getmetatable answers with (l_getmetatable): FocusCore's
+  -- character test compares against it.
+  __bg3leProxy = true,
 }
 
 -- An entity-valued field reads as the entity, or nil for the null handle --
@@ -12961,22 +13233,38 @@ Ext.Stats = {}
 -- One attribute, decoded as far as its type allows.
 -- A functor, with StatsExpressionRef filled in: a pointer to a pooled
 -- expression whose Code, Params and RefCount upstream reports as a table.
-local function read_functor(address, class)
-  local out = Ext._Internal.ReadObject(address, class, "", {})
-  for field, value in pairs(out) do
-    if value == "<unsupported>" then
-      local pooled, code, refCount =
-        Ext._Internal.ObjectExpression(address, class, field)
-      if pooled ~= nil then
-        local expression = Ext._Internal.ReadObject(
-          pooled, "StatsExpressionPooled", "", {})
-        Ext._Internal.AmendObject(expression, "Code", code)
-        Ext._Internal.AmendObject(expression, "RefCount", refCount)
-        Ext._Internal.AmendObject(out, field, expression)
+local read_functor
+do
+  -- Per class, the fields that can read as "<unsupported>" (variants and
+  -- unconvertible kinds). Only those are probed for an expression; walking
+  -- every field with pairs read the whole functor, 118 us a SpellSuccess.
+  local candidates = {}
+
+  read_functor = function(address, class)
+    local out = Ext._Internal.ReadObject(address, class, "", {})
+    local fields = candidates[class]
+    if fields == nil then
+      fields = {}
+      for field, kind in pairs(Ext._Internal.ObjectFields(class, "") or {}) do
+        if kind == "variant" or kind == "unsupported" then fields[#fields + 1] = field end
+      end
+      candidates[class] = fields
+    end
+    for _, field in ipairs(fields) do
+      if out[field] == "<unsupported>" then
+        local pooled, code, refCount =
+          Ext._Internal.ObjectExpression(address, class, field)
+        if pooled ~= nil then
+          local expression = Ext._Internal.ReadObject(
+            pooled, "StatsExpressionPooled", "", {})
+          Ext._Internal.AmendObject(expression, "Code", code)
+          Ext._Internal.AmendObject(expression, "RefCount", refCount)
+          Ext._Internal.AmendObject(out, field, expression)
+        end
       end
     end
+    return out
   end
-  return out
 end
 
 local function read_attribute(addr, i)
@@ -14041,7 +14329,7 @@ function Ext._Internal.PointedObject(target, class)
           return Ext._Internal.PointedObject(at, cls or "stats::Functor")
         end)
         Ext._Internal.AmendObject(loaded, "Remove", function(_, functor)
-          local meta = getmetatable(functor)
+          local meta = Ext._Internal.RawGetMetatable(functor)
           local id = type(meta) == "table" and meta.__bg3leIdentity or nil
           local hex = type(id) == "string" and id:match("^p:(%x+)$") or nil
           if hex == nil then error("bg3le: Functors:Remove expects a functor", 2) end
@@ -14070,7 +14358,7 @@ end
 -- fields of the object they are filed under, and read_template adds the
 -- engine's own name for a template. Those belong in the snapshot only.
 local function amend_object(view, key, value)
-  local meta = getmetatable(view)
+  local meta = Ext._Internal.RawGetMetatable(view)
   local values = meta ~= nil and meta.__bg3leValues or nil
   if values == nil then
     view[key] = value
@@ -14106,7 +14394,12 @@ function Ext.StaticData.GetAll(resourceType)
   return Ext._Internal.ResourceGuids(resourceType)
 end
 
+-- Upstream's takes an entity as well as a handle.
 function Ext.Entity.HandleToUuid(handle)
+  if type(handle) ~= "number" then
+    handle = Ext._Internal.EntityProxyHandle(handle)
+    if handle == nil then return nil end
+  end
   return Ext._Internal.GetField(handle, "Uuid", "EntityUuid")
 end
 
@@ -14419,7 +14712,7 @@ local function load_mod_from(name, uuid, read, report)
     env._G = env
     Mods[table_name] = env
   else
-    if getmetatable(env) == nil then setmetatable(env, { __index = _G }) end
+    if Ext._Internal.RawGetMetatable(env) == nil then setmetatable(env, { __index = _G }) end
     for k, v in pairs(fields) do
       if rawget(env, k) == nil then rawset(env, k, v) end
     end
@@ -14719,24 +15012,30 @@ function Ext._Internal.LoadModScripts()
   mods_loaded = true
 end
 
--- A session coming up: the bootstraps if they have not run, then upstream's
--- order -- SessionLoading, the save's PersistentVars, SessionLoaded.
-function Ext._Internal.LoadMods()
+-- A session coming up, in two halves so that both contexts finish the first
+-- before either starts the second (lua_load_mods): upstream fires StatsLoaded
+-- from the module load, ahead of every SessionLoaded, and a mod may create
+-- stats in one context that the other checks for (UAWarCaster).
+--
+-- The first half: the bootstraps if they have not run, then StatsLoaded --
+-- only for stats loaded since the last one, as upstream fires it from
+-- RPGStats::Load: a save load keeps the stats, and a stats pass run twice
+-- appends twice.
+function Ext._Internal.LoadModsBegin()
   Ext._Internal.LoadModScripts()
-  Ext._Internal.FireEvent("SessionLoading")
-  Ext._Internal.RestorePersistentVars()
-  Ext._Internal.RestoreSaveExtras()
-
-  -- After every mod's bootstrap, as upstream does: a mod subscribes in
-  -- its bootstrap and expects to be called once everything is up.
-  Ext._Internal.FireEvent("SessionLoaded")
-  -- Only for stats the engine has loaded since the last one, as upstream
-  -- fires it from RPGStats::Load: a save load keeps the stats, and a mod's
-  -- stats pass run twice appends twice.
   if Ext.Stats.Get ~= nil and Ext._Internal.StatsCount() > 0
      and Ext._Internal.StatsTakeLoaded() then
     Ext._Internal.FireEvent("StatsLoaded")
   end
+end
+
+-- The second: upstream's SessionLoading, the save's PersistentVars, then
+-- SessionLoaded, once every mod has subscribed in its bootstrap.
+function Ext._Internal.LoadModsSession()
+  Ext._Internal.FireEvent("SessionLoading")
+  Ext._Internal.RestorePersistentVars()
+  Ext._Internal.RestoreSaveExtras()
+  Ext._Internal.FireEvent("SessionLoaded")
 end
 -- Everything below runs last, once every module it touches exists.
 -- An earlier version ran here from further up, which meant it bound
@@ -14980,7 +15279,7 @@ do
   }
 
   local function address_of(v, what)
-    local meta = getmetatable(v)
+    local meta = Ext._Internal.RawGetMetatable(v)
     local id = type(meta) == "table" and meta.__bg3leIdentity or nil
     if type(id) == "function" then id = id(v) end
     local hex = type(id) == "string" and (id:match("^p:(%x+)$") or id:match("^o:(%d+):")) or nil
@@ -15755,7 +16054,7 @@ local function path_view(at)
 end
 
 local function path_address(path)
-  local meta = getmetatable(path)
+  local meta = Ext._Internal.RawGetMetatable(path)
   local id = type(meta) == "table" and meta.__bg3leIdentity or nil
   if type(id) ~= "string" or id:sub(1, 2) ~= "p:" then
     error("bg3le: expected an AiPath", 3)
@@ -15972,7 +16271,7 @@ if not Ext._Internal.IsClientState() then
   end
 
   function Ext.Level.ExecuteSurfaceAction(action)
-    local meta = getmetatable(action)
+    local meta = Ext._Internal.RawGetMetatable(action)
     local id = type(meta) == "table" and meta.__bg3leIdentity or nil
     if type(id) ~= "string" or id:sub(1, 2) ~= "p:" then
       error("bg3le: Ext.Level.ExecuteSurfaceAction expects a surface action", 2)
@@ -16412,6 +16711,30 @@ void lua_tick() {
         // Upstream's RequestResetClientLuaState: clients on other machines too.
         net_reset_remote_clients();
     }
+    // The server's state as of this tick; a change is upstream's server-side
+    // GameStateChanged. Tracked before the state exists too, so the first
+    // change a freshly loaded mod sees is a real one.
+    static char const* serverState = nullptr;
+    if (char const* now = server_game_state(); now != nullptr && now != serverState) {
+        char const* was = serverState;
+        serverState = now;
+        if (was != nullptr) {
+            logf("gamestate: server %s -> %s", was, now);
+            InContext server(Side::Server);
+            if (server) {
+                lua_getglobal(g_lua, "Ext");
+                lua_getfield(g_lua, -1, "_Internal");
+                lua_getfield(g_lua, -1, "ServerStateChanged");
+                lua_pushstring(g_lua, was);
+                lua_pushstring(g_lua, now);
+                if (lua_pcall(g_lua, 2, 0, 0) != LUA_OK) {
+                    logf("lua: server GameStateChanged failed: %s", lua_tostring(g_lua, -1));
+                    lua_pop(g_lua, 1);
+                }
+                lua_pop(g_lua, 2);
+            }
+        }
+    }
     if (g_server_lua == nullptr) return;
 
     if (g_reset_events_pending) {
@@ -16504,15 +16827,18 @@ bool lua_client_input(InputKind kind, long long a, long long b, long long c,
 
 // Both contexts load mods, each running the bootstrap that belongs to it.
 // The server goes first, as upstream's does: a client script that asks the
-// server for something wants a listener already registered.
+// server for something wants a listener already registered. Every context's
+// StatsLoaded comes before any SessionLoaded, as upstream's do.
 void lua_load_mods() {
-    {
-        InContext server(Side::Server);
-        if (server) call_internal("LoadMods");
-    }
-    if (g_client_lua != nullptr) {
-        InContext client(Side::Client);
-        if (client) call_internal("LoadMods");
+    for (char const* phase : {"LoadModsBegin", "LoadModsSession"}) {
+        {
+            InContext server(Side::Server);
+            if (server) call_internal(phase);
+        }
+        if (g_client_lua != nullptr) {
+            InContext client(Side::Client);
+            if (client) call_internal(phase);
+        }
     }
 }
 

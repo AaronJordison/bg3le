@@ -16,3 +16,13 @@ standalone interpreter and compiler mains) are omitted.
 
 Lua is MIT licensed; see the copyright notice at the end of lua.h. The fork is
 by Norbyte, to whom thanks are owed for this and for bg3se generally.
+
+Local changes, both for bg3le's enum values (proxy userdata, not cppobjects,
+since bg3le does not use the cppobject machinery for its own objects):
+
+- lvm.c, luaV_equalobj: an enum value compares through its __eq with a label
+  string or a number, as bg3se's cppobject enum values do.
+- ltable.c, canonicalize_key: an enum value used as a table key stands for its
+  label string, as bg3se's LuaCppCanonicalize makes them.
+  luaH_bg3leenumlabel (declared in ltable.h) is what recognises one: a full
+  userdata whose metatable holds __bg3leEnumLabel.

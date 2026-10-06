@@ -72,6 +72,8 @@ BG3LE_TARGET(UpdateMessagesSlot,
              [] { const std::uintptr_t b = resolve_rip(Sig{"UpdateMessagesSlot", 0x4011d2b, "4c 8d 05 ?? ?? ?? ?? 4c 8d bb 38 04 00 00 4c 89 2c ca"}, 3, 7); return b == 0 ? 0 : b + 0x110; }())
 BG3LE_TARGET(EoCClient,
              resolve_rip(Sig{"EoCClient", 0x21eb97b, "48 8b 0d ?? ?? ?? ?? 49 8b 55 08 31 f6 48 8b 99 a0 01 00 00"}, 3, 7))
+BG3LE_TARGET(EoCServer,
+             resolve_rip(Sig{"EoCServer", 0x21bfa18, "48 8b 05 ?? ?? ?? ?? 48 8b 74 24 30 48 8b 80 88 02 00 00"}, 3, 7))
 BG3LE_TARGET(StatsGlobal,
              resolve_rip(Sig{"StatsGlobal", 0x221d8d5, "48 8b 05 ?? ?? ?? ?? f3 0f 11 44 24 20 48 85 c0 0f 84 ?? ?? ?? ??"}, 3, 7))
 BG3LE_TARGET(BoostsManager,

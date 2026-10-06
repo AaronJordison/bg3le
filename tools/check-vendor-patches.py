@@ -159,6 +159,8 @@ CHECKS = [
     ("the Vulkan overlay is composited onto an HDR swapchain",
      lambda: "bg3le::hdr_record(image.commandBuffer" in text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl")
              and "bg3le::hdr_swapchain_created(" in text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl")),
+    ("the Vulkan overlay draws only live image views",
+     lambda: text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl").count("bg3le::vk_image_view_live(") == 2),
     ("icon atlases register their resident texture",
      lambda: "reinterpret_cast<TextureDescriptor*>(atlas->Texture)" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")
              and "bool Resident{ false };" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.h")),

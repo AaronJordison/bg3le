@@ -465,6 +465,12 @@ into an SDR image with its own render pass, and `src/vendor/imgui_hdr.cpp`
 lays it over the game's frame with a fullscreen shader. An SDR swapchain
 takes upstream's path unchanged.
 
+**`Extender/Client/IMGUI/Vulkan.inl` — only live image views are drawn.**
+`RegisterTexture` and `BindTexture` ask `src/vulkan_forward.cpp`, which
+tracks `vkCreateImageView` and `vkDestroyImageView`, whether a texture's view
+is live, and refuse it with an error if not. A bad view crashed NVIDIA's
+driver in `ImGui_ImplVulkan_AddTexture` when MCM opened.
+
 ## vendor/compat — bg3le's own code
 
 Shims that let the upstream sources compile unmodified. They are force-included

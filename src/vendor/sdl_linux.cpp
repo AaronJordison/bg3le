@@ -121,49 +121,46 @@ int SDLManager::OnPollEvent(SDLPollEventProc* wrapped, SDL_Event* event)
         }
     }
 
-    int result = wrapped(event);
+    // An event the overlay keeps is skipped over, not answered with 0 as
+    // upstream does: 0 tells the game the queue is empty, so it stopped
+    // polling with events still queued. Linux delivers every pointer motion
+    // (Windows coalesces them), so with the cursor over a window the game
+    // took one event a frame, the rest backed up, and the overlay -- drawn
+    // when the queue empties -- skipped frames.
+    for (int skipped = 0;; ++skipped) {
+        int result = wrapped(event);
 
-    // The end of the frame's event batch, which is where the overlay is
-    // drawn from.
-    //
-    // Upstream draws it from ecl::ScriptExtender::OnUpdate -- the client's
-    // own update, on the thread that also polls SDL. bg3le drew it from the
-    // server's story tick instead, and that was wrong in a way that only
-    // showed up in input: imgui's event queue was being appended on the main
-    // thread and consumed on another, so the frame that submitted a widget
-    // was not the frame that had seen the mouse, and nothing was ever
-    // hovered. Zero from SDL_PollEvent is the game's own signal that the
-    // batch is done, once a frame, on the right thread.
-    if (result == 0) bg3le::imgui_overlay_tick();
+        // The end of the frame's event batch, which is where the overlay is
+        // drawn from: upstream draws it from the client's own update, on the
+        // thread that polls SDL, and zero from SDL_PollEvent is that point.
+        if (result == 0) {
+            bg3le::imgui_overlay_tick();
+            return 0;
+        }
 
-    if (!enableUI_ || ImGui::GetCurrentContext() == nullptr) return result;
+        if (!enableUI_ || ImGui::GetCurrentContext() == nullptr) return result;
 
-    if (result == 1) {
         {
             std::lock_guard _(mutex_);
             ImGui_ImplSDL2_ProcessEvent(event);
         }
 
-        // Swallowed rather than passed on, so typing in a widget does not
-        // also drive the game.
+        // Kept rather than passed on, so typing in a widget does not also
+        // drive the game.
         ImGuiIO& io = ImGui::GetIO();
-        if (io.WantTextInput
+        const bool text = io.WantTextInput
             && (event->type == SDL_KEYDOWN || event->type == SDL_KEYUP
                 || event->type == SDL_TEXTEDITING
-                || event->type == SDL_TEXTINPUT)) {
-            result = 0;
-        }
-
-        if (io.WantCaptureMouse
+                || event->type == SDL_TEXTINPUT);
+        const bool mouse = io.WantCaptureMouse
             && (event->type == SDL_MOUSEMOTION
                 || event->type == SDL_MOUSEBUTTONDOWN
                 || event->type == SDL_MOUSEBUTTONUP
-                || event->type == SDL_MOUSEWHEEL)) {
-            result = 0;
-        }
+                || event->type == SDL_MOUSEWHEEL);
+        if (!text && !mouse) return 1;
+        // A bound on a stream that never ends; the next call carries on.
+        if (skipped >= 256) return 0;
     }
-
-    return result;
 }
 
 void SDLManager::OnIsTextInputActive(SDL_bool active)

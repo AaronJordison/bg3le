@@ -32,8 +32,11 @@
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <unordered_set>
 
 #include "detour_interpose.h"
 #include "log.h"
@@ -182,6 +185,66 @@ extern "C" VkResult vkCreateSwapchainKHR(VkDevice dev,
     return result;
 }
 
+// Every live image view, so the overlay can refuse a texture handle that is
+// not one: a misread or destroyed view crashes the driver (NVIDIA, in
+// AddTexture, opening MCM). Not hooked by bg3se, so no detour lookup.
+namespace {
+std::mutex g_views_lock;
+std::unordered_set<VkImageView> g_views;
+std::atomic<bool> g_views_tracked{false};
+
+}  // namespace
+
+extern "C" VkResult vkCreateImageView(VkDevice dev,
+                                      VkImageViewCreateInfo const* info,
+                                      VkAllocationCallbacks const* alloc,
+                                      VkImageView* out) {
+    using Fn = VkResult (*)(VkDevice, VkImageViewCreateInfo const*,
+                            VkAllocationCallbacks const*, VkImageView*);
+    static const Fn next = real<Fn>("vkCreateImageView");
+    const VkResult result = next(dev, info, alloc, out);
+    if (result == VK_SUCCESS && out != nullptr) {
+        std::lock_guard<std::mutex> held(g_views_lock);
+        g_views.insert(*out);
+        g_views_tracked.store(true, std::memory_order_relaxed);
+    }
+    return result;
+}
+
+extern "C" void vkDestroyImageView(VkDevice dev, VkImageView view,
+                                   VkAllocationCallbacks const* alloc) {
+    using Fn = void (*)(VkDevice, VkImageView, VkAllocationCallbacks const*);
+    static const Fn next = real<Fn>("vkDestroyImageView");
+    {
+        std::lock_guard<std::mutex> held(g_views_lock);
+        g_views.erase(view);
+    }
+    next(dev, view, alloc);
+}
+
+namespace bg3le {
+
+// Whether `view` is a live image view. True for anything when no creation
+// has been seen, so a missed path cannot blank every texture.
+bool vk_image_view_live(VkImageView view) {
+    if (!g_views_tracked.load(std::memory_order_relaxed)) {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true)) {
+            logf("vulkan: no image view creation seen; textures are not checked");
+        }
+        return true;
+    }
+    std::lock_guard<std::mutex> held(g_views_lock);
+    return g_views.count(view) != 0;
+}
+
+std::size_t vk_image_views_tracked() {
+    std::lock_guard<std::mutex> held(g_views_lock);
+    return g_views.size();
+}
+
+}  // namespace bg3le
+
 BG3LE_FORWARD(void, vkDestroySwapchainKHR,
               (VkDevice dev, VkSwapchainKHR chain,
                VkAllocationCallbacks const* alloc),
@@ -207,6 +270,8 @@ Entry const kEntries[] = {
     {"vkCreateSwapchainKHR", (void*)&vkCreateSwapchainKHR},
     {"vkDestroySwapchainKHR", (void*)&vkDestroySwapchainKHR},
     {"vkQueuePresentKHR", (void*)&vkQueuePresentKHR},
+    {"vkCreateImageView", (void*)&vkCreateImageView},
+    {"vkDestroyImageView", (void*)&vkDestroyImageView},
 };
 
 }  // namespace

@@ -235,9 +235,11 @@ bg3le reads a corrected copy of any archive that has them:
   engine derives win: GUI textures are always `.DDS`, as every one in the base
   game is, and a `.dds` shows the missing-texture "?".
 
-The player's files are not touched. The copy is the original with the changed
-files and a new file list appended, in `~/.local/share/bg3le/pakfix/`, cloned
-where the filesystem supports it, and rebuilt only when the archive changes.
+The player's files are not touched. The copy, in `~/.local/share/bg3le/pakfix/`,
+holds only the changed files and a new file list, a few kilobytes; every other
+entry points into the original, which the game reads as the copy's second part.
+It is rebuilt only when the archive changes, and copies for archives no longer
+installed are removed.
 Every fix is logged as `pakfix: <archive>: ...`. `BG3LE_PAKFIX=0` turns it
 off, and `build/pakfix IN.pak OUT.pak` writes the same copy and lists the
 fixes.

@@ -1268,11 +1268,24 @@ extern "C" char const* bg3le_stats_name(void const* object) {
 // move once the manager holds it.
 std::unordered_map<std::string, void const*> const& stats_by_name();
 
+// Both indexes, at file scope so bg3le_stats_appended can extend them.
+struct NameIndex {
+    std::unordered_map<std::string, void const*> byName;
+    std::uint32_t builtFor = 0;
+    std::uint32_t gen = ~0u;
+};
+struct ListIndex {
+    std::unordered_map<std::string, std::vector<char const*>> byList;
+    std::uint32_t builtFor = 0;
+    std::uint32_t gen = ~0u;
+};
+NameIndex g_name_index;
+ListIndex g_list_index;
+
 std::unordered_map<std::string, void const*> const& stats_by_name() {
-    static std::unordered_map<std::string, void const*> byName;
-    static std::uint32_t builtFor = 0;
-    static std::uint32_t gen = ~0u;
-    clear_on_rebuild(gen, [&] { byName.clear(); builtFor = 0; });
+    auto& byName = g_name_index.byName;
+    auto& builtFor = g_name_index.builtFor;
+    clear_on_rebuild(g_name_index.gen, [&] { byName.clear(); builtFor = 0; });
 
     const std::uint32_t size = state().Objects.Size;
     if (!byName.empty() && builtFor == size) return byName;
@@ -1318,10 +1331,9 @@ extern "C" char const* bg3le_stats_type(void const* object);
 // upstream returns them in.
 std::unordered_map<std::string, std::vector<char const*>> const&
 stats_names_by_list() {
-    static std::unordered_map<std::string, std::vector<char const*>> byList;
-    static std::uint32_t builtFor = 0;
-    static std::uint32_t gen = ~0u;
-    clear_on_rebuild(gen, [&] { byList.clear(); builtFor = 0; });
+    auto& byList = g_list_index.byList;
+    auto& builtFor = g_list_index.builtFor;
+    clear_on_rebuild(g_list_index.gen, [&] { byList.clear(); builtFor = 0; });
 
     const std::uint32_t size = state().Objects.Size;
     if (!byList.empty() && builtFor == size) return byList;
@@ -1375,6 +1387,31 @@ stats_names_by_list() {
     logf("stats: %zu names indexed across %zu modifier lists", every.size(),
          byList.size() - 1);
     return byList;
+}
+
+// bg3le's own Create appended `object`: extend the indexes by that one entry
+// rather than letting the size change rebuild them. A rebuild per created stat
+// was most of UAWarCaster's 17-second StatsLoaded (two creates per spell).
+extern "C" void bg3le_stats_appended(void const* object) {
+    const CacheLock lock(stats_cache_lock());
+    if (!ready() || object == nullptr) return;
+    const std::uint32_t size = state().Objects.Size;
+    char const* name = bg3le_stats_name(object);
+    if (name == nullptr || name[0] == '\0') return;
+
+    NameIndex& n = g_name_index;
+    if (n.gen == g_generation && !n.byName.empty() && n.builtFor + 1 == size) {
+        n.byName.emplace(name, object);
+        n.builtFor = size;
+    }
+    ListIndex& l = g_list_index;
+    if (l.gen == g_generation && !l.byList.empty() && l.builtFor + 1 == size
+        && n.builtFor == size) {
+        l.byList[""].push_back(name);
+        char const* list = bg3le_stats_type(object);
+        if (list != nullptr && list[0] != '\0') l.byList[list].push_back(name);
+        l.builtFor = size;
+    }
 }
 
 extern "C" std::size_t bg3le_stats_names_count(char const* list) {
@@ -1432,7 +1469,22 @@ extern "C" void* bg3le_stats_find(char const* wanted) {
 
 namespace {
 
+void const* list_for_uncached(void const* object);
+
+// Kept per object: its list is fixed when it is made, and the two reads this
+// costs were a third of every attribute read (EasyCheat's spell pass).
 void const* list_for(void const* object) {
+    static std::unordered_map<void const*, void const*> byObject;
+    static std::uint32_t gen = ~0u;
+    clear_on_rebuild(gen, [&] { byObject.clear(); });
+    auto known = byObject.find(object);
+    if (known != byObject.end()) return known->second;
+    void const* list = list_for_uncached(object);
+    if (list != nullptr) byObject.emplace(object, list);
+    return list;
+}
+
+void const* list_for_uncached(void const* object) {
     Found const& f = state();
     if (!f.Attributes || object == nullptr) return nullptr;
 
@@ -1510,9 +1562,8 @@ int property_type(void const* enumeration);
 // One object's indexed properties, read in one go.
 //
 // A one-entry cache, because that is the access pattern: everything that
-// reads a stat reads all of its attributes in a row. Keyed by the vector's
-// own bounds as well as the object, so a write through bg3le_stats_attr_set
-// -- which goes to the same memory -- cannot be served a stale copy.
+// reads a stat reads all of its attributes in a row. bg3le_stats_attr_set
+// drops it, so a write is never served a stale copy.
 struct PropertyCache {
     void const* Object{nullptr};
     void const* Begin{nullptr};
@@ -1529,14 +1580,16 @@ PropertyCache& property_cache() {
 std::vector<std::int32_t> const* properties_of(void const* object) {
     PropertyCache& cache = property_cache();
 
-    void const* begin = nullptr;
-    void const* end = nullptr;
-    auto const* props = (char const*)object + state().PropsOffset;
-    if (!read_as(props + 0, &begin)) return nullptr;
-    if (!read_as(props + 8, &end)) return nullptr;
-    if (begin == nullptr || end < begin) return nullptr;
+    // The same object's again without a read: its bounds only change through
+    // bg3le_stats_attr_set, which drops this cache.
+    if (object == cache.Object) return &cache.Values;
 
-    if (object == cache.Object && begin == cache.Begin) return &cache.Values;
+    void const* bounds[2] = {nullptr, nullptr};
+    auto const* props = (char const*)object + state().PropsOffset;
+    if (!safe_read(props, bounds, sizeof(bounds))) return nullptr;
+    void const* begin = bounds[0];
+    void const* end = bounds[1];
+    if (begin == nullptr || end < begin) return nullptr;
 
     const std::size_t count =
         (std::size_t)((char const*)end - (char const*)begin) / 4;

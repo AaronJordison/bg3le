@@ -79,7 +79,21 @@ struct Entry {
     std::uint64_t SizeOnDisk;
     std::uint64_t UncompressedSize;
     std::uint8_t Flags;
+    std::uint32_t Part;
 };
+
+// The game's own multi-part archives are textures, so they stay skipped; a
+// split pakfix copy (src/pak_fix.cpp) is read through its parts.
+bool parts_wanted(char const* path) {
+    return std::strstr(path, "/Data/") == nullptr;
+}
+
+// "<name>_<n>.pak", LSPK's name for part n of "<name>.pak".
+std::string part_name(char const* path, std::uint32_t part) {
+    std::string p(path);
+    if (p.size() > 4) p.resize(p.size() - 4);
+    return p + "_" + std::to_string(part) + ".pak";
+}
 
 // The low nibble of Flags is the compression method; the rest is its level,
 // which does not matter for decoding.
@@ -167,13 +181,14 @@ bool read_list(char const* path, std::vector<Entry>* out) {
     if (!pak_listing(path, &listing)) return false;
     // Only 18 records the part count in the header; 15 and 16 keep it per
     // entry, where a multi-part archive shows up as a part other than zero
-    // and is skipped below.
-    if (listing.Version == 18 && listing.Parts != 1) return false;
+    // and is skipped below unless its parts are read.
+    const bool parts = parts_wanted(path);
+    if (listing.Version == 18 && listing.Parts != 1 && !parts) return false;
 
     std::vector<Entry> entries;
     entries.reserve(listing.Files.size());
     for (PakFile const& file : listing.Files) {
-        if (file.Part != 0) continue;
+        if (file.Part != 0 && !parts) continue;
         Entry e{};
         std::memcpy(e.Name, file.Name.data(), file.Name.size());
         e.Name[file.Name.size()] = '\0';
@@ -181,6 +196,7 @@ bool read_list(char const* path, std::vector<Entry>* out) {
         e.SizeOnDisk = file.SizeOnDisk;
         e.UncompressedSize = file.UncompressedSize;
         e.Flags = file.Flags;
+        e.Part = file.Part;
         entries.push_back(e);
     }
 
@@ -408,18 +424,23 @@ bool pak_read(char const* path,
 
     std::FILE* f = std::fopen(path, "rb");
     if (f == nullptr) return false;
+    std::map<std::uint32_t, std::FILE*> parts{{0, f}};
 
     std::vector<char> contents;
     for (Entry const& e : entries) {
         if (!accept(e.Name)) continue;
-        if (!read_entry(f, e, &contents)) {
+        std::FILE*& from = parts[e.Part];
+        if (from == nullptr) from = std::fopen(part_name(path, e.Part).c_str(), "rb");
+        if (from == nullptr || !read_entry(from, e, &contents)) {
             logf("pak: %s: could not read %s", path, e.Name);
             continue;
         }
         sink(e.Name, contents.data(), contents.size());
     }
 
-    std::fclose(f);
+    for (auto& [_, file] : parts) {
+        if (file != nullptr) std::fclose(file);
+    }
     return true;
 }
 

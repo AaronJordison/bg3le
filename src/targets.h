@@ -61,6 +61,8 @@ std::uintptr_t StateMachineVtable();
 std::uintptr_t FunctorsVtable();
 std::uintptr_t UpdateMessagesSlot();
 std::uintptr_t EoCClient();
+// esv::EoCServer*, whose GameStateMachine (+0xa0) holds the server state.
+std::uintptr_t EoCServer();
 std::uintptr_t StatsGlobal();
 std::uintptr_t BoostsManager();
 std::uintptr_t ClientLevelManager();

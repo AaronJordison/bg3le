@@ -44,6 +44,7 @@ LUAI_FUNC const TValue *luaH_getint (Table *t, lua_Integer key);
 LUAI_FUNC const TValue *luaH_getint (lua_State* L, Table *t, lua_Integer key);
 LUAI_FUNC void luaH_setint (lua_State *L, Table *t, lua_Integer key,
                                                     TValue *value);
+LUAI_FUNC const TValue *luaH_bg3leenumlabel (lua_State *L, const TValue *v);
 LUAI_FUNC const TValue *luaH_getshortstr (lua_State* L, Table *t, TString *key);
 LUAI_FUNC const TValue *luaH_getstr (lua_State* L, Table *t, TString *key);
 LUAI_FUNC const TValue *luaH_get (lua_State* L, Table *t, const TValue *key);

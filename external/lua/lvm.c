@@ -413,6 +413,12 @@ int luaV_equalobj (lua_State *L, const TValue *t1, const TValue *t2) {
         tm = luaT_gettmbyobj(L, t1, TM_EQ);
       } else if (ttype(t2) == LUA_TLIGHTCPPOBJECT || ttype(t2) == LUA_TCPPOBJECT) {
         tm = luaT_gettmbyobj(L, t2, TM_EQ);
+      } else if (luaH_bg3leenumlabel(L, t1) != NULL) {
+        /* bg3le: its enum values compare with labels and numbers, as
+           bg3se's cppobject ones do (see README.bg3le) */
+        tm = luaT_gettmbyobj(L, t1, TM_EQ);
+      } else if (luaH_bg3leenumlabel(L, t2) != NULL) {
+        tm = luaT_gettmbyobj(L, t2, TM_EQ);
       }
     }
 
