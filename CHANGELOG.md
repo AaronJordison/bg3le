@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.5 (2026-10-05)
+
+- Fixed a crash at startup on the Steam Deck in the game's Wwise audio engine (`JobManager_dispatchMultiple`, about
+  20 seconds in). bg3le widened every thread's CPU affinity, including the three Wwise pins to its own cores; freed,
+  its event thread could dispatch before the job manager's queues existed. Wwise's threads are now left as it sets
+  them; the engine's own threads are still widened. `BG3LE_AFFINITY=off` was the workaround.
+- Mods packed with zstd (newer LSLib builds) now load: their `meta.lsx` and scripts could not be read, so their
+  scripts never ran (AutomaticMagicalSecretsExtender). Zstandard's decompressor is vendored next to LZ4.
+- On a first launch, or the first after a game update, client mods now wait for bg3le to find the game's module
+  list instead of loading without it. Mods that call `Ext.Mod.GetMod` as they load (MCM) failed with "0 loaded,
+  0 available".
+
 ## v0.2.4 (2026-10-04)
 
 - Fixed components of an entity created this tick reading as nil: an item just made with `Osi.CreateAt` keeps its
