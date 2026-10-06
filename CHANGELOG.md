@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.6 (2026-10-06)
+
+- Mod archives are corrected for two things the native build trips over and Windows does not, by reading a fixed
+  copy in place of the original (`~/.local/share/bg3le/pakfix/`; the player's files are not touched):
+  - Empty files are given a single newline. An empty stats `.txt` hung the first load at about 95% (Expansion,
+    and likely Druid Wild Shape Overhaul); Cilraaz found an empty `.khn` crashing Goon's Barbarian Overhaul
+    (not yet retested with the newline).
+  - Where a mod's own files refer to a file it contains with different case, the names and references are made
+    to agree, lowercase where they differ. GUI textures become `.DDS`, as the engine requires: a `.dds` icon
+    showed the missing-texture "?" (Expansion, 5e Spells, Mind Weaver, Clerics and others).
+
+  Every fix is logged as `pakfix: <archive>: ...`; `BG3LE_PAKFIX=0` turns it off.
+
 ## v0.2.5 (2026-10-05)
 
 - Fixed a crash at startup on the Steam Deck in the game's Wwise audio engine (`JobManager_dispatchMultiple`, about
