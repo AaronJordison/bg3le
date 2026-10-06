@@ -102,7 +102,15 @@ bool read_at(std::FILE* f, long offset, void* out, std::size_t size) {
 
 // One file's bytes, decompressed if it was stored that way.
 bool read_entry(std::FILE* f, Entry const& e, std::vector<char>* out) {
-    if (e.SizeOnDisk == 0 || e.SizeOnDisk > kMaxFileBytes) return false;
+    // A 0-byte stored entry is a real, empty file: Volition Cabinet v1.17.0
+    // ships one (Server/_Init.lua), Windows/SE reads it as an empty chunk,
+    // and refusing it fails the mod's whole bootstrap. Empty success, and
+    // only an absurd size is unreadable.
+    if (e.SizeOnDisk == 0) {
+        out->clear();
+        return true;
+    }
+    if (e.SizeOnDisk > kMaxFileBytes) return false;
     if (e.UncompressedSize > kMaxFileBytes) return false;
 
     std::vector<char> raw((std::size_t)e.SizeOnDisk);
