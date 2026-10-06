@@ -89,12 +89,6 @@ constexpr std::uint8_t kMethodZlib = 1;
 constexpr std::uint8_t kMethodLZ4 = 2;
 constexpr std::uint8_t kMethodZstd = 3;
 
-// A name that fills the field has no terminator of its own.
-void copy_name(Entry* out, char const* name) {
-    std::memcpy(out->Name, name, 256);
-    out->Name[256] = '\0';
-}
-
 bool read_at(std::FILE* f, long offset, void* out, std::size_t size) {
     if (std::fseek(f, offset, SEEK_SET) != 0) return false;
     return std::fread(out, 1, size, f) == size;
@@ -169,6 +163,38 @@ bool read_list(char const* path, std::vector<Entry>* out) {
         }
     }
 
+    PakListing listing;
+    if (!pak_listing(path, &listing)) return false;
+    // Only 18 records the part count in the header; 15 and 16 keep it per
+    // entry, where a multi-part archive shows up as a part other than zero
+    // and is skipped below.
+    if (listing.Version == 18 && listing.Parts != 1) return false;
+
+    std::vector<Entry> entries;
+    entries.reserve(listing.Files.size());
+    for (PakFile const& file : listing.Files) {
+        if (file.Part != 0) continue;
+        Entry e{};
+        std::memcpy(e.Name, file.Name.data(), file.Name.size());
+        e.Name[file.Name.size()] = '\0';
+        e.Offset = file.Offset;
+        e.SizeOnDisk = file.SizeOnDisk;
+        e.UncompressedSize = file.UncompressedSize;
+        e.Flags = file.Flags;
+        entries.push_back(e);
+    }
+
+    if (entries.size() <= kCacheableEntries) {
+        std::lock_guard<std::mutex> held(g_lists_lock);
+        g_lists.emplace(path, entries);
+    }
+    *out = std::move(entries);
+    return true;
+}
+
+}  // namespace
+
+bool pak_listing(char const* path, PakListing* out) {
     std::FILE* f = std::fopen(path, "rb");
     if (f == nullptr) return false;
 
@@ -179,24 +205,19 @@ bool read_list(char const* path, std::vector<Entry>* out) {
         return false;
     }
 
-    std::uint32_t version = 0;
-    std::uint64_t listOffset = 0;
-    std::memcpy(&version, header + 4, sizeof(version));
-    std::memcpy(&listOffset, header + 8, sizeof(listOffset));
+    PakListing listing;
+    std::memcpy(&listing.Version, header + 4, sizeof(listing.Version));
+    std::memcpy(&listing.ListOffset, header + 8, sizeof(listing.ListOffset));
+    std::memcpy(&listing.ListSize, header + 16, sizeof(listing.ListSize));
+    listing.Flags = header[20];
 
     std::size_t entrySize = 0;
-    if (version == 18) {
+    if (listing.Version == 18) {
         entrySize = sizeof(Entry18);
-        // Only 18 records the part count in the header; 15 and 16 keep it
-        // per entry, where a multi-part archive shows up as a part other
-        // than zero and is skipped there.
         std::uint16_t parts = 0;
         std::memcpy(&parts, header + 38, sizeof(parts));
-        if (parts != 1) {
-            std::fclose(f);
-            return false;
-        }
-    } else if (version == 15 || version == 16) {
+        listing.Parts = parts;
+    } else if (listing.Version == 15 || listing.Version == 16) {
         entrySize = sizeof(Entry15);
     } else {
         std::fclose(f);
@@ -205,7 +226,7 @@ bool read_list(char const* path, std::vector<Entry>* out) {
 
     std::uint32_t count = 0;
     std::uint32_t compressed = 0;
-    if (!read_at(f, (long)listOffset, &count, sizeof(count))
+    if (!read_at(f, (long)listing.ListOffset, &count, sizeof(count))
         || std::fread(&compressed, 1, sizeof(compressed), f)
                != sizeof(compressed)) {
         std::fclose(f);
@@ -216,61 +237,126 @@ bool read_list(char const* path, std::vector<Entry>* out) {
         std::fclose(f);
         return false;
     }
+    listing.ListCompressed = compressed;
 
     std::vector<char> packed(compressed);
     if (std::fread(packed.data(), 1, packed.size(), f) != packed.size()) {
         std::fclose(f);
         return false;
     }
+    std::fclose(f);
 
     std::vector<char> list(count * entrySize);
     const int want = (int)list.size();
     if (LZ4_decompress_safe(packed.data(), list.data(), (int)packed.size(),
                             want) != want) {
-        std::fclose(f);
         return false;
     }
-    packed.clear();
-    packed.shrink_to_fit();
 
-    std::vector<Entry> entries;
-    entries.reserve(count);
+    listing.Files.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         char const* at = list.data() + (std::size_t)i * entrySize;
-        Entry e{};
-        if (version == 18) {
+        PakFile file;
+        char name[257];
+        if (listing.Version == 18) {
             Entry18 raw{};
             std::memcpy(&raw, at, sizeof(raw));
-            if (raw.Part != 0) continue;
-            copy_name(&e, raw.Name);
-            e.Offset = (std::uint64_t)raw.OffsetLow
-                       | ((std::uint64_t)raw.OffsetHigh << 32);
-            e.SizeOnDisk = raw.SizeOnDisk;
-            e.UncompressedSize = raw.UncompressedSize;
-            e.Flags = raw.Flags;
+            std::memcpy(name, raw.Name, 256);
+            file.Offset = (std::uint64_t)raw.OffsetLow
+                          | ((std::uint64_t)raw.OffsetHigh << 32);
+            file.SizeOnDisk = raw.SizeOnDisk;
+            file.UncompressedSize = raw.UncompressedSize;
+            file.Flags = raw.Flags;
+            file.Part = raw.Part;
         } else {
             Entry15 raw{};
             std::memcpy(&raw, at, sizeof(raw));
-            if (raw.Part != 0) continue;
-            copy_name(&e, raw.Name);
-            e.Offset = raw.Offset;
-            e.SizeOnDisk = raw.SizeOnDisk;
-            e.UncompressedSize = raw.UncompressedSize;
-            e.Flags = (std::uint8_t)raw.Flags;
+            std::memcpy(name, raw.Name, 256);
+            file.Offset = raw.Offset;
+            file.SizeOnDisk = raw.SizeOnDisk;
+            file.UncompressedSize = raw.UncompressedSize;
+            file.Flags = (std::uint8_t)raw.Flags;
+            file.Part = raw.Part;
+            file.Crc = raw.Crc;
         }
-        entries.push_back(e);
+        name[256] = '\0';
+        file.Name = name;
+        listing.Files.push_back(std::move(file));
     }
 
-    std::fclose(f);
-    if (entries.size() <= kCacheableEntries) {
-        std::lock_guard<std::mutex> held(g_lists_lock);
-        g_lists.emplace(path, entries);
-    }
-    *out = std::move(entries);
+    *out = std::move(listing);
     return true;
 }
 
-}  // namespace
+bool pak_file_read(std::FILE* f, PakFile const& file,
+                   std::vector<char>* out) {
+    Entry e{};
+    e.Offset = file.Offset;
+    e.SizeOnDisk = file.SizeOnDisk;
+    e.UncompressedSize = file.UncompressedSize;
+    e.Flags = file.Flags;
+    return read_entry(f, e, out);
+}
+
+bool pak_file_empty(PakFile const& file) {
+    if (file.SizeOnDisk == 0) return true;
+    return (file.Flags & kMethodMask) != kMethodNone
+           && file.UncompressedSize == 0;
+}
+
+bool pak_write_listing(std::FILE* f, std::uint64_t at,
+                       PakListing const& listing) {
+    std::vector<char> list;
+    for (PakFile const& file : listing.Files) {
+        if (file.Name.size() >= 256) return false;
+        if (listing.Version == 18) {
+            Entry18 e{};
+            std::memcpy(e.Name, file.Name.c_str(), file.Name.size() + 1);
+            e.OffsetLow = (std::uint32_t)(file.Offset & 0xffffffffu);
+            e.OffsetHigh = (std::uint16_t)(file.Offset >> 32);
+            e.Part = (std::uint8_t)file.Part;
+            e.Flags = file.Flags;
+            e.SizeOnDisk = (std::uint32_t)file.SizeOnDisk;
+            e.UncompressedSize = (std::uint32_t)file.UncompressedSize;
+            list.insert(list.end(), (char const*)&e, (char const*)(&e + 1));
+        } else {
+            Entry15 e{};
+            std::memcpy(e.Name, file.Name.c_str(), file.Name.size() + 1);
+            e.Offset = file.Offset;
+            e.SizeOnDisk = file.SizeOnDisk;
+            e.UncompressedSize = file.UncompressedSize;
+            e.Part = file.Part;
+            e.Flags = file.Flags;
+            e.Crc = file.Crc;
+            list.insert(list.end(), (char const*)&e, (char const*)(&e + 1));
+        }
+    }
+
+    std::vector<char> packed((std::size_t)LZ4_compressBound((int)list.size()));
+    const int compressed = LZ4_compress_default(
+        list.data(), packed.data(), (int)list.size(), (int)packed.size());
+    if (compressed <= 0) return false;
+
+    const std::uint32_t count = (std::uint32_t)listing.Files.size();
+    const std::uint32_t compressedSize = (std::uint32_t)compressed;
+    // The header's list size keeps whatever relation to the compressed size
+    // the original had: 18 counts the two counts in, as pak_write notes.
+    const std::uint32_t listSize =
+        compressedSize + (listing.ListSize - listing.ListCompressed);
+    if (std::fseek(f, (long)at, SEEK_SET) != 0
+        || std::fwrite(&count, 1, sizeof(count), f) != sizeof(count)
+        || std::fwrite(&compressedSize, 1, sizeof(compressedSize), f)
+               != sizeof(compressedSize)
+        || std::fwrite(packed.data(), 1, compressedSize, f)
+               != compressedSize
+        || std::fseek(f, 8, SEEK_SET) != 0
+        || std::fwrite(&at, 1, sizeof(at), f) != sizeof(at)
+        || std::fwrite(&listSize, 1, sizeof(listSize), f)
+               != sizeof(listSize)) {
+        return false;
+    }
+    return std::fflush(f) == 0;
+}
 
 bool pak_list(char const* path,
               std::function<void(char const* name)> const& sink) {

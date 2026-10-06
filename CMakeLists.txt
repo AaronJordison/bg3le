@@ -343,6 +343,9 @@ add_library(bg3le SHARED
     src/detour_interpose.cpp
     src/inflate.cpp
     src/pak.cpp
+    src/lsf.cpp
+    src/pak_fix.cpp
+    src/pak_fix_hooks.cpp
     src/game_files.cpp
     src/sdl_forward.cpp
     src/math.cpp
@@ -438,3 +441,9 @@ add_executable(modsettings tools/modsettings.cpp src/pak.cpp
                src/inflate.cpp src/log.cpp external/lz4/lz4.c
                external/zstd/zstddeclib.c)
 target_include_directories(modsettings PRIVATE external/lz4 external/zstd src)
+
+# The corrected copy bg3le reads in place of a mod archive, from the same code.
+add_executable(pakfix tools/pakfix.cpp src/pak_fix.cpp src/lsf.cpp src/pak.cpp
+               src/inflate.cpp src/log.cpp external/lz4/lz4.c
+               external/zstd/zstddeclib.c)
+target_include_directories(pakfix PRIVATE external/lz4 external/zstd src)

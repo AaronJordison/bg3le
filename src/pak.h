@@ -3,6 +3,8 @@
 // Reads Larian's LSPK archives, enough to pull text files out of them.
 
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <utility>
@@ -38,5 +40,40 @@ bool pak_read(char const* path,
 // reads stored entries as readily as compressed ones.
 bool pak_write(char const* path,
                std::vector<std::pair<std::string, std::string>> const& files);
+
+// One archive's file list in full, for rewriting it (src/pak_fix.cpp).
+struct PakFile {
+    std::string Name;
+    std::uint64_t Offset = 0;
+    std::uint64_t SizeOnDisk = 0;
+    std::uint64_t UncompressedSize = 0;
+    std::uint8_t Flags = 0;
+    std::uint32_t Part = 0;
+    std::uint32_t Crc = 0;  // 15 and 16 only
+};
+
+struct PakListing {
+    std::uint32_t Version = 0;
+    std::uint8_t Flags = 0;  // the header's; 0x04 is a solid archive
+    std::uint32_t Parts = 1;
+    std::uint64_t ListOffset = 0;
+    std::uint32_t ListSize = 0;  // as the header records it
+    std::uint32_t ListCompressed = 0;
+    std::vector<PakFile> Files;
+};
+
+// Every entry, multi-part ones included, uncached.
+bool pak_listing(char const* path, PakListing* out);
+
+// One file's contents, decompressed. False for an empty file.
+bool pak_file_read(std::FILE* f, PakFile const& file, std::vector<char>* out);
+
+// Whether a file has no contents at all.
+bool pak_file_empty(PakFile const& file);
+
+// Writes `listing` as the file list at offset `at` of the archive open in
+// `f`, and points the header at it. The data the entries name stays put.
+bool pak_write_listing(std::FILE* f, std::uint64_t at,
+                       PakListing const& listing);
 
 }  // namespace bg3le
