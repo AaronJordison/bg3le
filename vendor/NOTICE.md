@@ -520,8 +520,8 @@ types out of the generated property maps, not to shim a symbol.
 v1.5.7 by **Yann Collet and the Zstandard contributors at Meta**, BSD
 (see `external/zstd/LICENSE`). `zstddeclib.c` is the release's single-file
 decoder, generated with its own `build/single_file_libs/combine.sh` from
-`zstd-1.5.7.tar.gz` (sha256 `eb33e51f…6fa3`), and `zstd.h` is the release's
-header. Unmodified.
+`zstd-1.5.7.tar.gz` (sha256 `eb33e51f…6fa3`), and `zstd.h` and `zstd_errors.h` are the release's
+headers. Unmodified.
 
 **Thank you.** Newer LSLib builds pack mods with zstd, and without it bg3le
 could not read those mods' scripts. Vendored rather than linked for the same
