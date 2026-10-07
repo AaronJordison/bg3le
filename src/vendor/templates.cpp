@@ -555,6 +555,11 @@ extern "C" char const* bg3le_templates_type(char const* id) {
     return found->Type.c_str();
 }
 
+// The server's esv::CacheTemplateManager, checked by content, or null.
+extern "C" void* bg3le_templates_cache_manager() {
+    return (void*)cache_manager();
+}
+
 // The server's esv::LevelManager, checked by content, or null.
 extern "C" void* bg3le_server_level_manager() {
     static std::uintptr_t at = 0;

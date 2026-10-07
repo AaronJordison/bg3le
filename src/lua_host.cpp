@@ -1116,6 +1116,24 @@ int l_moveable_set(lua_State* L) {
     return 1;
 }
 
+// Ext._Internal.ItemCreateCacheTemplate(handle, component) -> the item's cache
+// template's address, or nil (src/vendor/cache_template.cpp).
+extern "C" void* bg3le_item_create_cache_template(void* container, void* item,
+                                                  std::uint64_t entity);
+void* component_pointer(std::uint64_t handle, const char* name, void const** meta);
+void* server_container();
+int l_item_create_cache_template(lua_State* L) {
+    const auto handle = static_cast<std::uint64_t>(luaL_checkinteger(L, 1));
+    const char* name = luaL_checkstring(L, 2);
+    void const* meta = nullptr;
+    void* item = component_pointer(handle, name, &meta);
+    void* tmpl = item != nullptr
+        ? bg3le_item_create_cache_template(server_container(), item, handle) : nullptr;
+    if (tmpl == nullptr) return 0;
+    lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<std::uintptr_t>(tmpl)));
+    return 1;
+}
+
 int l_peek_string(lua_State* L) {
     const auto addr = static_cast<std::uintptr_t>(luaL_checkinteger(L, 1));
     char buf[512];
@@ -7851,6 +7869,8 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "PeekString");
     lua_pushcfunction(g_lua, l_moveable_set);
     lua_setfield(g_lua, -2, "MoveableSet");
+    lua_pushcfunction(g_lua, l_item_create_cache_template);
+    lua_setfield(g_lua, -2, "ItemCreateCacheTemplate");
     lua_pushcfunction(g_lua, l_list_dir);
     lua_setfield(g_lua, -2, "ListDir");
     lua_pushcfunction(g_lua, l_extender_root);
@@ -10050,6 +10070,29 @@ builtin_members["esv::Character"] = {
   Character = {Get = self_alias("ServerCharacter.Character")},
 }
 builtin_members["esv::Item"] = {Item = {Get = self_alias("ServerItem.Item")}}
+
+-- esv::Item::CreateCacheTemplate: the item's template cloned into the server's
+-- cache and the item switched to it (src/vendor/cache_template.cpp).
+do
+  local function item_create_cache_template(self)
+    local meta = Ext._Internal.RawGetMetatable(self)
+    local id = type(meta) == "table" and meta.__bg3leIdentity or nil
+    if type(id) == "function" then id = id(self) end
+    -- A component view's identity is "c:<handle>:<component>:<prefix>".
+    local handle, comp = nil, nil
+    if type(id) == "string" then
+      local h, c = id:match("^c:(%-?%d+):(.*):$")
+      handle, comp = tonumber(h), c
+    end
+    if handle == nil or not Ext.IsServer() then
+      error("bg3le: CreateCacheTemplate needs the server's ServerItem component", 2)
+    end
+    local address = Ext._Internal.ItemCreateCacheTemplate(handle, comp)
+    if address == nil then return nil end
+    return Ext._Internal.TemplateAt(address, "item")
+  end
+  builtin_members["esv::Item"].CreateCacheTemplate = {Fn = item_create_cache_template}
+end
 
 -- MoveableObject's SetWorldTranslate, SetWorldRotate and SetWorldScale, on it
 -- and every class upstream's property maps derive from it.
@@ -16078,6 +16121,9 @@ local function template_at(address, engineType)
   end
   return out
 end
+
+-- For esv::Item::CreateCacheTemplate, which is defined before this.
+Ext._Internal.TemplateAt = template_at
 
 -- The managers besides the root one, as TemplateFindIn numbers them.
 local LOCAL, CACHE, LOCAL_CACHE = 1, 2, 3
