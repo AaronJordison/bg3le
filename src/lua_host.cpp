@@ -1098,6 +1098,24 @@ int l_peek(lua_State* L) {
     return 1;
 }
 
+// Ext._Internal.MoveableSet(address, what, {x, y, z[, w]}) -> true; what is
+// 0 translate, 1 rotate, 2 scale (src/vendor/moveable.cpp).
+extern "C" bool bg3le_moveable_set(void* object, int what, float const* v);
+int l_moveable_set(lua_State* L) {
+    auto* object = reinterpret_cast<void*>(static_cast<std::uintptr_t>(luaL_checkinteger(L, 1)));
+    const int what = static_cast<int>(luaL_checkinteger(L, 2));
+    luaL_checktype(L, 3, LUA_TTABLE);
+    float v[4] = {0, 0, 0, 1};
+    const int n = what == 1 ? 4 : 3;
+    for (int i = 0; i < n; ++i) {
+        lua_geti(L, 3, i + 1);
+        v[i] = static_cast<float>(luaL_checknumber(L, -1));
+        lua_pop(L, 1);
+    }
+    lua_pushboolean(L, bg3le_moveable_set(object, what, v) ? 1 : 0);
+    return 1;
+}
+
 int l_peek_string(lua_State* L) {
     const auto addr = static_cast<std::uintptr_t>(luaL_checkinteger(L, 1));
     char buf[512];
@@ -7785,6 +7803,8 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "Peek");
     lua_pushcfunction(g_lua, l_peek_string);
     lua_setfield(g_lua, -2, "PeekString");
+    lua_pushcfunction(g_lua, l_moveable_set);
+    lua_setfield(g_lua, -2, "MoveableSet");
     lua_pushcfunction(g_lua, l_list_dir);
     lua_setfield(g_lua, -2, "ListDir");
     lua_pushcfunction(g_lua, l_extender_root);
@@ -9980,6 +10000,37 @@ builtin_members["esv::Character"] = {
   Character = {Get = self_alias("ServerCharacter.Character")},
 }
 builtin_members["esv::Item"] = {Item = {Get = self_alias("ServerItem.Item")}}
+
+-- MoveableObject's SetWorldTranslate, SetWorldRotate and SetWorldScale, on it
+-- and every class upstream's property maps derive from it.
+do
+  local function moveable_setter(what, name)
+    return function(self, value)
+      -- The object's address: "p:<hex>" on a pointed-to object, "o:<decimal>:" on a view.
+      local meta = Ext._Internal.RawGetMetatable(self)
+      local id = type(meta) == "table" and meta.__bg3leIdentity or nil
+      if type(id) == "function" then id = id(self) end
+      local addr = nil
+      if type(id) == "string" then
+        local hex = id:match("^p:(%x+)$")
+        addr = hex and tonumber(hex, 16) or tonumber(id:match("^o:(%-?%d+):$"))
+      end
+      if addr == nil or not Ext._Internal.MoveableSet(addr, what, value) then
+        error("bg3le: " .. name .. " could not reach this object's engine method", 2)
+      end
+    end
+  end
+  local methods = {
+    SetWorldTranslate = {Fn = moveable_setter(0, "SetWorldTranslate")},
+    SetWorldRotate = {Fn = moveable_setter(1, "SetWorldRotate")},
+    SetWorldScale = {Fn = moveable_setter(2, "SetWorldScale")},
+  }
+  for _, class in ipairs({"MoveableObject", "Visual", "Effect", "RenderableObject", "AnimatableObject",
+                          "Shape", "DecalObject", "CullableInstance", "InstancingRenderableObject",
+                          "InstancingObject", "LightComponent"}) do
+    builtin_members[class] = methods
+  end
+end
 
 -- Published so the views can reach it; the prelude is compiled in more than
 -- one chunk, so a local here is not in scope there.
