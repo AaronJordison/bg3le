@@ -2288,6 +2288,14 @@ int l_get_field(lua_State* L) {
     bool readOnly = false;
     if (!bg3le_meta_resolve(meta, path, component, &address, &kind, &size,
                             &readOnly)) {
+        // P_BITMASK: a flag of a flags field reads as a boolean.
+        std::uint64_t mask = 0;
+        std::uint64_t raw = 0;
+        if (bg3le_meta_bitflag(meta, path, component, &address, &size, &mask)
+            && size <= 8 && safe_read(address, &raw, size)) {
+            lua_pushboolean(L, (raw & mask) == mask ? 1 : 0);
+            return 1;
+        }
         lua_pushnil(L);
         lua_pushfstring(L, "%s.%s does not resolve", name, path);
         return 2;
@@ -2390,6 +2398,16 @@ int l_set_field(lua_State* L) {
     bool readOnly = false;
     if (!bg3le_meta_resolve(meta, path, component, &address, &kind, &size,
                             &readOnly)) {
+        // P_BITMASK: assigning a flag sets or clears its bit.
+        std::uint64_t mask = 0;
+        std::uint64_t raw = 0;
+        if (bg3le_meta_bitflag(meta, path, component, &address, &size, &mask)
+            && size <= 8 && safe_read(address, &raw, size)) {
+            raw = lua_toboolean(L, 4) ? (raw | mask) : (raw & ~mask);
+            std::memcpy(address, &raw, size);
+            lua_pushboolean(L, 1);
+            return 1;
+        }
         lua_pushnil(L);
         lua_pushfstring(L, "%s.%s does not resolve", name, path);
         return 2;
@@ -12635,6 +12653,12 @@ make_fields = function(handle, comp, prefix, fields, identity)
         if extra ~= nil then
           if extra.Fn ~= nil then return extra.Fn end
           return extra.Get(self)
+        end
+
+        -- P_BITMASK: one flag of a flags field, as a boolean.
+        if type(key) == "string" then
+          local flag = Ext._Internal.GetField(handle, comp, path_to(key))
+          if type(flag) == "boolean" then return flag end
         end
 
         local where = prefix == "" and comp or (comp .. "." .. prefix)
