@@ -22,6 +22,12 @@ SNIPER_DIR="$HOME/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper"
 export MANGOHUD="${MANGOHUD:-1}"
 export BG3LE_DUMP_DB="${BG3LE_DUMP_DB:-1}"  # temporary: structural dump
 
+# The bundled SDL2 prefers its wayland driver here and that path enumerates no
+# displays ("SDL_Init failed: The video driver did not add any displays" ->
+# CollectDisplayAdaptersAndDisplays: no displays found -> Die, every launch).
+# XWayland works: x11 unless the caller chose a driver.
+export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
+
 # Driver tuning, exported so it reaches the game inside the container.
 #
 # vk_x11_strict_image_count is a Mesa driconf option, and Mesa reads driconf
