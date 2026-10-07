@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.3 (2026-10-07)
+
+- `SetWorldTranslate`, `SetWorldRotate` and `SetWorldScale` work on `MoveableObject` and every render class
+  upstream derives from it (`Visual`, `Effect`, `LightComponent` and the rest).
+- Assigning a table to a map entry whose value is a struct replaces it with a value filled from the table, as
+  upstream does, instead of failing. Applies to component and object maps.
+- `Ext.IMGUI.NewWindow` and `Ext.IMGUI.LoadFont` take a number as the name, using its text, as upstream does.
+- Osiris calls accept an empty string argument. They were refused as "could not be interned".
+
 ## v0.3.2 (2026-10-07)
 
 - `StatsLoaded` now fires where upstream fires it: in the client, from the engine's stats load at startup, after the
