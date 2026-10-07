@@ -2185,11 +2185,9 @@ bool write_bytes(void* at, void const* from, std::size_t size) {
 // A sixteen-byte Larian string holding this text, built in place.
 //
 // Fifteen characters or fewer live inside the sixteen bytes and need
-// nothing else. Longer ones need a buffer, and that buffer is ours and
-// stays ours: the entry it belongs to sits past the array's size, so the
-// engine never destructs it and never frees what it points at. A few
-// hundred bytes that outlive the session is the price of not handing the
-// engine a pointer from the wrong allocator.
+// nothing else. Longer ones need a buffer from the engine's heap: the entry
+// sits inside the pool, and the engine frees its buffer when it resets the
+// stats for a load (a malloc'd one crashed it there).
 bool build_ls_string(void* at, char const* text) {
     const std::size_t length = std::strlen(text);
     unsigned char raw[16] = {};
@@ -2200,8 +2198,8 @@ bool build_ls_string(void* at, char const* text) {
         return write_bytes(at, raw, sizeof(raw));
     }
 
-    if (length > (1u << 20)) return false;
-    char* owned = (char*)std::malloc(length + 1);
+    if (length > (1u << 20) || !bg3le_game_allocator_ready()) return false;
+    char* owned = (char*)bg3se::GameAllocRaw(length + 1);
     if (owned == nullptr) return false;
     std::memcpy(owned, text, length + 1);
 
@@ -2212,9 +2210,8 @@ bool build_ls_string(void* at, char const* text) {
     std::memcpy(raw + 8, &size, sizeof(size));
     std::memcpy(raw + 12, &capacity, sizeof(capacity));
 
-    if (write_bytes(at, raw, sizeof(raw))) return true;
-    std::free(owned);
-    return false;
+    // On failure the buffer is abandoned rather than freed (never free engine memory).
+    return write_bytes(at, raw, sizeof(raw));
 }
 
 // The pool index for a condition expression: the one it already has, or a
