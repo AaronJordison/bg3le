@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.3.2 (2026-10-07)
+
+- `StatsLoaded` now fires where upstream fires it: in the client, from the engine's stats load at startup, after the
+  client's mods load into a fresh Lua state. It used to fire in both contexts as each session started, after
+  character creation was already built. Compatibility Framework's subclasses now appear in character creation (14
+  Cleric subclasses instead of 8), shared `StatsLoaded` handlers no longer run twice, and starting a session is
+  faster: bg3le's mod loading there went from 4.75 s to about 1 s with 5eSpells, Expansion and UAWarCaster.
+- `Ext.Stats.Sync` during `StatsLoaded` no longer warns that a prototype manager is not located: the engine builds
+  every prototype from the stats right after, as upstream relies on.
+- The stats are found again after every module load, and a search that failed during the load no longer hides them
+  from `StatsLoaded` for ten seconds.
+- ImGui widgets are userdata, as upstream's are; mods tell a widget from a list of widgets by `type()`. Fixes
+  Trials Ascension's GUI errors.
+- Pointers print as MSVC's `%p` does (16 uppercase hex digits, no `0x`). Trials Ascension seeds its random numbers
+  from one, and its scripts failed to load.
+
 ## v0.3.1 (2026-10-07)
 
 - Fixed a crash loading any save when a mod writes a stat condition before the load, at the main menu. A condition
