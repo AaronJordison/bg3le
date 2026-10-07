@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# bg3le-sync — pull upstream (lenonk/bg3le), merge into the working branch, rebuild,
+# push to Forgejo and the GitHub fork. Run at the START of every bg3le session:
+# upstream moves fast (v0.2.4 -> v0.3.1 in two days) and a stale branch is how
+# merge debt happens.
+#
+# usage:   bg3le-sync [--no-build] [--branch NAME]
+set -Eeuo pipefail
+
+BUILD=1
+BRANCH="$(git -C "$HOME/code/bg3le-fork" branch --show-current)"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-build) BUILD=0 ;;
+    --branch) BRANCH="$2"; shift 2 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    *) printf 'unknown arg: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+cd "$HOME/code/bg3le-fork"
+printf 'syncing branch %s\n' "$BRANCH"
+git checkout -q "$BRANCH"
+
+printf '  fetch upstream (origin) + forgejo\n'
+git fetch origin --tags --prune --quiet
+git fetch forgejo --prune --quiet
+
+BEHIND="$(git rev-list --count "HEAD..origin/main")"
+printf '  upstream main: %s new commit(s)\n' "$BEHIND"
+if [ "$BEHIND" -gt 0 ]; then
+  git log --oneline "HEAD..origin/main" | sed 's/^/    /'
+  printf '  merging origin/main\n'
+  git merge --no-edit origin/main
+  printf '  CONFLICTS? resolve them, then re-run: bg3le-sync\n'
+fi
+
+if [ "$BUILD" -eq 1 ]; then
+  printf '  building\n'
+  cmake --build build -j16 >/dev/null
+fi
+
+git push forgejo "$BRANCH"
+# The GitHub fork carries the same branches; PRs to lenonk/bg3le go from there
+# (with Aaron's explicit go — no PR leaves the house without it).
+git push github "$BRANCH"
+printf 'done: %s at %s (forgejo + github)\n' "$BRANCH" "$(git rev-parse --short HEAD)"
