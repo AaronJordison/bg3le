@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.1 (2026-10-07)
+
+- Fixed a crash loading any save when a mod writes a stat condition before the load, at the main menu. A condition
+  longer than 15 characters kept its text in a buffer from the wrong allocator, and the engine frees every
+  condition's buffer when it resets the stats for a load. The buffer now comes from the engine's own heap.
+- The release zip carries a `VERSION` file, which `install.py` copies to `~/.local/share/bg3le/version`, so mod
+  managers can tell the installed release from the newest one. Releases are also published on GitHub, where
+  Amethyst Mod Manager's bg3le wizard finds them.
+
 ## v0.3.0 (2026-10-06)
 
 - MCM and other ImGui windows are smooth again on Linux. Input the overlay keeps from the game was hidden by
