@@ -47,6 +47,10 @@ void lua_eval(const char* code, std::string* result, std::string* error);
 // game leaves LoadModule, before the main menu is built.
 void lua_load_client_scripts();
 
+// Upstream's OnStatsLoad, once RPGStats::Load returns: a fresh client state,
+// its bootstraps, then StatsLoaded.
+void lua_stats_loaded();
+
 // One client frame, on the client's thread: GameStateChanged when the state
 // moved (from/to non-null), then timers and Tick.
 void lua_client_tick(char const* from, char const* to);

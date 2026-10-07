@@ -28,6 +28,8 @@ BG3LE_TARGET(TextureManagerLoad,
              resolve_code(Sig{"TextureManagerLoad", 0x25a0770, "55 41 57 41 56 41 55 41 54 53 48 81 ec d8 00 00 00 49 89 f4 48 89 fb 44 89 44 24 1c"}))
 BG3LE_TARGET(TextureManagerUnload,
              resolve_code(Sig{"TextureManagerUnload", 0x24f9570, "55 41 57 41 56 41 55 41 54 53 48 83 ec 58 49 89 f6 48 89 fb e8 ?? ?? ?? ?? 85 c0"}))
+BG3LE_TARGET(StatsLoad,
+             resolve_code(Sig{"StatsLoad", 0x3b3c140, "41 56 53 50 4c 8b 35 ?? ?? ?? ?? 48 89 fb 4c 89 f7 e8 ?? ?? ?? ?? 4c 89 f7"}))
 BG3LE_TARGET(WwiseSetSwitch,
              resolve_code(Sig{"WwiseSetSwitch", 0x28a0b90, "50 48 89 f7 48 89 d6 48 89 ca e8 ?? ?? ?? ?? 83 f8 01"}))
 BG3LE_TARGET(ParseFunctor,

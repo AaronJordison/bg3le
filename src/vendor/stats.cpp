@@ -41,6 +41,7 @@
 #include <GameDefinitions/Stats/Stats.h>
 #include <GameDefinitions/Components/All.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -303,6 +304,7 @@ struct Found {
     void const* TranslatedHeader{nullptr};  // and for TranslatedStrings
     bool Attributes{false};             // whether all of the above landed
     void const* First{nullptr};         // Objects[0], to notice a rebuild
+    std::uint32_t ModuleLoads{0};       // g_module_loads when found
 };
 
 Found& state() {
@@ -316,6 +318,11 @@ Found& state() {
 // another list was, and a stale name map then says Conditions is not an
 // attribute of an interrupt.
 std::uint32_t g_generation = 0;
+
+// Module loads finished, from the game state (bg3le_stats_module_loaded): the
+// engine rebuilds its stats then, and can reuse the same allocations, so
+// Objects[0] moving does not show every rebuild.
+std::atomic<std::uint32_t> g_module_loads{0};
 
 template <class F>
 void clear_on_rebuild(std::uint32_t& seen, F clear) {
@@ -1056,6 +1063,12 @@ void const* first_object(Found const& f) {
 bool ready() {
     Found& f = state();
     static std::time_t lastAttempt = 0;
+    if (f.Objects.Buffer != nullptr && f.ModuleLoads != g_module_loads.load()) {
+        logf("stats: the engine reloaded its modules; finding the stats again");
+        ++g_generation;
+        f = Found{};
+        lastAttempt = 0;
+    }
     if (f.Objects.Buffer != nullptr) {
         if (!refresh_objects(false)) return true;
         // A rebuild re-creates every object, so the first one moves; bg3le's
@@ -1069,16 +1082,25 @@ bool ready() {
         lastAttempt = 0;
     }
 
+    // A module load finishing ends the cooldown: a search during the load fails.
+    static std::uint32_t attemptLoads = 0;
     const std::time_t now = std::time(nullptr);
-    if (lastAttempt != 0 && now - lastAttempt < 10) return false;
+    if (lastAttempt != 0 && now - lastAttempt < 10
+        && attemptLoads == g_module_loads.load()) {
+        return false;
+    }
     lastAttempt = now;
+    attemptLoads = g_module_loads.load();
 
     const auto started = std::clock();
     const bool ok = search_for_stats();
     const double ms =
         1000.0 * (double)(std::clock() - started) / (double)CLOCKS_PER_SEC;
     logf("stats: search took %.0f ms", ms);
-    if (ok) state().First = first_object(state());
+    if (ok) {
+        state().First = first_object(state());
+        state().ModuleLoads = g_module_loads.load();
+    }
     return ok;
 }
 
@@ -1213,18 +1235,40 @@ extern "C" std::size_t bg3le_stats_count() {
 // load keeps them, and firing again let 5eSpells append to the same Boosts
 // on every load until one outgrew the string table. A reload re-creates
 // every Object, so the first one's address is the identity.
+// Set once RPGStats::Load is hooked: the hook fires StatsLoaded, as upstream's does.
+std::atomic<bool> g_stats_load_hooked{false};
+
+extern "C" void bg3le_stats_load_hooked() { g_stats_load_hooked = true; }
+
+// Inside RPGStats::Load, StatsLoaded included.
+std::atomic<bool> g_stats_loading{false};
+
+extern "C" void bg3le_stats_loading(bool loading) { g_stats_loading = loading; }
+extern "C" bool bg3le_stats_is_loading() { return g_stats_loading.load(); }
+
 extern "C" bool bg3le_stats_take_loaded(bool client) {
+    if (g_stats_load_hooked.load()) return false;
     const CacheLock lock(stats_cache_lock());
     if (!ready()) return false;
     static void const* fired[2] = {nullptr, nullptr};  // per context
+    static std::uint32_t firedLoads[2] = {~0u, ~0u};
     void const* first = object_at(0);
     void const*& last = fired[client ? 1 : 0];
-    if (first == nullptr || first == last) return false;
+    std::uint32_t& lastLoads = firedLoads[client ? 1 : 0];
+    const std::uint32_t loads = g_module_loads.load();
+    if (first == nullptr || (first == last && loads == lastLoads)) return false;
     if (last != nullptr) {
-        logf("stats: the engine rebuilt its stats (first object %p, was %p)", first, last);
+        logf("stats: the engine rebuilt its stats (first object %p, was %p; module load %u)",
+             first, last, loads);
     }
     last = first;
+    lastLoads = loads;
     return true;
+}
+
+// A module load finished (the game state left LoadModule): the stats were rebuilt.
+extern "C" void bg3le_stats_module_loaded() {
+    ++g_module_loads;
 }
 
 extern "C" void* bg3le_stats_at(std::size_t index) {

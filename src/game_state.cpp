@@ -23,6 +23,10 @@
 #include "mem.h"
 #include "net.h"
 #include "stackdump.h"
+
+extern "C" void bg3le_stats_module_loaded();
+extern "C" void bg3le_stats_load_hooked();
+extern "C" void bg3le_stats_loading(bool loading);
 #include "targets.h"
 
 namespace bg3le {
@@ -124,6 +128,7 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
             logf("gamestate: session unloaded; rebuilding the Lua states");
             lua_reset(false);
         }
+        if (std::strcmp(last, "LoadModule") == 0) bg3le_stats_module_loaded();
         if (std::strcmp(last, "LoadMenu") == 0) {
             show_version_number();
             lua_load_client_scripts();
@@ -135,6 +140,21 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
         if (now != nullptr) last = now;
         lua_client_tick(nullptr, nullptr);
     }
+    return result;
+}
+
+using StatsLoadProc = std::uint64_t (*)(void*, void*, void*, void*);
+StatsLoadProc g_stats_load = nullptr;
+
+// RPGStats::Load(paths), on the worker the client schedules it on.
+std::uint64_t stats_load_hook(void* paths, void* a, void* b, void* c) {
+    logf("stats: RPGStats::Load starts");
+    bg3le_stats_loading(true);
+    const std::uint64_t result = g_stats_load(paths, a, b, c);
+    logf("stats: RPGStats::Load done");
+    bg3le_stats_module_loaded();
+    lua_stats_loaded();
+    bg3le_stats_loading(false);
     return result;
 }
 
@@ -222,6 +242,16 @@ void install_game_state_hook() {
     } else {
         logf("gamestate: ecl::GameStateMachine::Update not found; the client "
              "ticks with the server");
+    }
+
+    const std::uintptr_t stats_load = target::StatsLoad();
+    if (stats_load != 0
+        && hook_call_sites(stats_load, reinterpret_cast<void*>(&stats_load_hook),
+                           &original) > 0) {
+        g_stats_load = reinterpret_cast<StatsLoadProc>(original);
+        bg3le_stats_load_hooked();
+    } else {
+        logf("gamestate: RPGStats::Load not found; StatsLoaded fires at story load");
     }
 
     // Its prologue loads a global rip-relatively, so the bytes differ in every

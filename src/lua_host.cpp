@@ -5199,6 +5199,7 @@ int l_stats_count(lua_State* L) {
 
 // Ext._Internal.StatsTakeLoaded() -> whether StatsLoaded is owed
 extern "C" bool bg3le_stats_take_loaded(bool client);
+extern "C" void bg3le_stats_module_loaded();
 int l_stats_take_loaded(lua_State* L) {
     lua_pushboolean(L, bg3le_stats_take_loaded(in_client_state()) ? 1 : 0);
     return 1;
@@ -15058,14 +15059,11 @@ function Ext._Internal.LoadModScripts()
 end
 
 -- A session coming up, in two halves so that both contexts finish the first
--- before either starts the second (lua_load_mods): upstream fires StatsLoaded
--- from the module load, ahead of every SessionLoaded, and a mod may create
--- stats in one context that the other checks for (UAWarCaster).
+-- before either starts the second (lua_load_mods).
 --
--- The first half: the bootstraps if they have not run, then StatsLoaded --
--- only for stats loaded since the last one, as upstream fires it from
--- RPGStats::Load: a save load keeps the stats, and a stats pass run twice
--- appends twice.
+-- The first half: the bootstraps if they have not run. StatsLoaded fires here
+-- only if RPGStats::Load could not be hooked (StatsTakeLoaded is false
+-- otherwise); the hook fires it in the client, as upstream's does.
 function Ext._Internal.LoadModsBegin()
   Ext._Internal.LoadModScripts()
   if Ext.Stats.Get ~= nil and Ext._Internal.StatsCount() > 0
@@ -16603,6 +16601,51 @@ void lua_load_client_scripts() {
     call_internal("LoadModScripts");
 }
 
+namespace {
+void fire_client_event(char const* name) {
+    if (g_client_lua == nullptr) return;
+    InContext client(Side::Client);
+    if (!client) return;
+    lua_State* L = g_lua;
+    const int top = lua_gettop(L);
+    lua_getglobal(L, "Ext");
+    if (lua_istable(L, -1)) lua_getfield(L, -1, "_Internal");
+    if (lua_istable(L, -1)) lua_getfield(L, -1, "FireEvent");
+    if (lua_isfunction(L, -1)) {
+        lua_pushstring(L, name);
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            logf("lua: client %s failed: %s", name, lua_tostring(L, -1));
+        }
+    }
+    lua_settop(L, top);
+}
+}  // namespace
+
+// Upstream's client RequestLuaReset: a fresh client state, the server untouched.
+void lua_reset_client() {
+    std::lock_guard<std::recursive_mutex> lock(g_client_lock);
+    imgui_api_reset();
+    bg3le_ui_reset();
+    lua_State* old = g_client_lua;
+    lua_State* was = t_lua;
+    g_client_lua = nullptr;
+    t_lua = nullptr;
+    if (old != nullptr) lua_close(old);
+    build_state(true);
+    t_lua = was == old ? nullptr : was;
+    logf("lua: client context rebuilt");
+}
+
+// ModuleLoadStarted is not fired: upstream throws it only into the
+// BootstrapModule.lua state it discards here, which bg3le does not run.
+void lua_stats_loaded() {
+    if (g_client_lua == nullptr) return;
+    lua_reset_client();
+    lua_load_client_scripts();
+    logf("lua: client StatsLoaded");
+    fire_client_event("StatsLoaded");
+}
+
 void lua_restore_persistent_vars() {
     if (g_server_lua == nullptr) return;
     InContext server(Side::Server);
@@ -16765,6 +16808,7 @@ void lua_tick() {
         serverState = now;
         if (was != nullptr) {
             logf("gamestate: server %s -> %s", was, now);
+            if (std::strcmp(was, "LoadModule") == 0) bg3le_stats_module_loaded();
             InContext server(Side::Server);
             if (server) {
                 lua_getglobal(g_lua, "Ext");
