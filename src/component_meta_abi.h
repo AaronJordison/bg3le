@@ -197,6 +197,9 @@ struct FieldDesc {
     // value rather than destroying it). Null where bg3le cannot. Last, as above.
     bool (*MapInsert)(void* container, void const* key);
     bool (*MapRemove)(void* container, void const* key);
+    // P_RENAMED's old name: found by name, left out of listings, as
+    // upstream's is. Last, as above.
+    bool Legacy;
 };
 
 }  // namespace bg3le

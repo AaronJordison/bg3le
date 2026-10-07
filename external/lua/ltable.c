@@ -110,8 +110,28 @@ static int l_hashfloat (lua_Number n) {
 #endif
 
 
+/* bg3le: an enum value's label, kept in its metatable, or NULL for anything
+   else. As a table key the value stands for its label, as bg3se's cppobject
+   enum values do through LuaCppCanonicalize. */
+const TValue *luaH_bg3leenumlabel (lua_State *L, const TValue *v) {
+  Table *mt;
+  const TValue *label;
+  if (L == NULL || ttype(v) != LUA_TUSERDATA) return NULL;
+  mt = uvalue(v)->metatable;
+  if (mt == NULL) return NULL;
+  label = luaH_getshortstr(L, mt, luaS_newliteral(L, "__bg3leEnumLabel"));
+  return ttisstring(label) ? label : NULL;
+}
+
+
 TValue* canonicalize_key (lua_State* L, TValue *key) {
   switch (ttype(key)) {
+    case LUA_TUSERDATA:
+    {
+      const TValue *label = luaH_bg3leenumlabel(L, key);
+      if (label != NULL) return (TValue *)label;
+      break;
+    }
     case LUA_TLIGHTCPPOBJECT:
     case LUA_TCPPOBJECT:
     {

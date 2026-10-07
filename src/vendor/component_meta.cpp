@@ -1252,6 +1252,14 @@ constexpr FieldDesc make_bitmask_field(char const* name, std::size_t offset) {
     return f;
 }
 
+// A field's old name, still found by mods written against it.
+template <class T>
+constexpr FieldDesc make_legacy_field(char const* name, std::size_t offset) {
+    FieldDesc f = make_field<T>(name, offset);
+    f.Legacy = true;
+    return f;
+}
+
 template <class T>
 constexpr FieldDesc make_plain_field(char const* name, std::size_t offset) {
     FieldDesc f{};
@@ -1641,9 +1649,11 @@ struct EnumTable;
 #define P_RO(prop) PN(prop, prop)
 #define PN_RO(name, prop) PN(name, prop)
 #define P_NOTIFY(prop, notify) PN(prop, prop)
-// The old name is deliberately not recorded; bg3le has no deprecated names to
-// stay compatible with.
-#define P_RENAMED(prop, oldName) PN(prop, prop)
+// The old name too, as upstream keeps it: mods still use field_1 and the like.
+#define P_RENAMED(prop, oldName)                                              \
+        PN(prop, prop)                                                        \
+        make_legacy_field<decltype(ObjectType::prop)>(                        \
+            #oldName, offsetof(ObjectType, prop)),
 
 #define P_BITMASK(prop)                                                       \
         make_bitmask_field<decltype(ObjectType::prop)>(                       \
@@ -2847,6 +2857,42 @@ extern "C" bool bg3le_meta_path_is_struct(void const* handle, char const* path) 
     return r.Ok && struct_type_of(&r.Field) != nullptr;
 }
 
+// The legacy names (P_RENAMED's old ones) of the struct at path, bases
+// included, which the listing below leaves out. Returns the number written.
+extern "C" std::size_t bg3le_meta_legacy_at(void const* handle,
+                                            char const* path,
+                                            char const** names,
+                                            std::uint8_t* kinds,
+                                            std::size_t capacity) {
+    if (handle == nullptr) return 0;
+    auto const* cls = static_cast<ClassFields const*>(handle);
+    if (path != nullptr && path[0] != '\0') {
+        const auto r = resolve_path(cls, path, nullptr);
+        if (!r.Ok) return 0;
+        cls = struct_type_of(&r.Field);
+        if (cls == nullptr) return 0;
+    }
+
+    std::size_t n = 0;
+    std::vector<ClassFields const*> pending{cls};
+    while (!pending.empty() && n < capacity) {
+        auto const* c = pending.back();
+        pending.pop_back();
+        for (auto const* f = c->Fields; f->Name != nullptr && n < capacity; ++f) {
+            if (f->Kind == FieldKind::Inherit) {
+                auto it = by_class_name().find(f->Name);
+                if (it != by_class_name().end()) pending.push_back(it->second);
+                continue;
+            }
+            if (!f->Legacy) continue;
+            names[n] = f->Name;
+            kinds[n] = reportable_kind(*f);
+            ++n;
+        }
+    }
+    return n;
+}
+
 // Enumerates a component's own fields, base classes included, for listing a
 // component from Lua. Returns the number written.
 // path may be null or empty for the component itself, or a dotted path to a
@@ -2881,6 +2927,7 @@ extern "C" std::size_t bg3le_meta_fields_at(void const* handle,
                 if (it != by_class_name().end()) pending.push_back(it->second);
                 continue;
             }
+            if (f->Legacy) continue;
             if (n >= capacity) break;
             names[n] = f->Name;
             // A Struct whose type bg3se does not describe cannot be descended
@@ -3501,6 +3548,16 @@ extern "C" char const* bg3le_meta_kind_name(std::uint8_t kind) {
 // bg3le_meta_enum_label, which asks by the path of the field that has the
 // type. Ext.Enums asks by the type itself, and nothing reached the registry
 // that way.
+// The Lua name of the enum a field holds (DiceSizeId), or null.
+extern "C" char const* bg3le_meta_enum_lua_name(void const* handle, char const* path) {
+    if (handle == nullptr || path == nullptr) return nullptr;
+    const auto r = resolve_path(static_cast<ClassFields const*>(handle), path, nullptr);
+    if (!r.Ok || r.Field.TypeName == nullptr) return nullptr;
+    auto it = by_enum_name().find(std::string_view(r.Field.TypeName, r.Field.TypeNameLength));
+    if (it == by_enum_name().end()) return nullptr;
+    return it->second->LuaName != nullptr ? it->second->LuaName : it->second->Name;
+}
+
 extern "C" char const* bg3le_meta_enum_at(std::size_t index,
                                           bool* isBitmask) {
     if (index >= std::size(kAllEnums)) return nullptr;

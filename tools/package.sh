@@ -27,6 +27,7 @@ install -m 0755 "$ROOT/install.py" "$STAGE/install.py"
 install -m 0755 "$ROOT/installer/bg3le-launch" "$STAGE/installer/bg3le-launch"
 install -m 0755 "$ROOT/client/bg3lua" "$STAGE/client/bg3lua"
 install -m 0644 "$ROOT/README.md" "$STAGE/README.md"
+echo "$VERSION" > "$STAGE/VERSION"  # install.py copies it for mod managers to read
 install -m 0644 "$ROOT/LICENSE" "$STAGE/LICENSE"
 install -m 0644 "$ROOT/include/bg3le_plugin.h" "$STAGE/include/bg3le_plugin.h"
 

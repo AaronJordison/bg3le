@@ -82,7 +82,8 @@ structure was found, and what was measured, is in
 - **Fixes for the native build itself**: level loads from 65–98 s to about
   1 s ([reference/SLOW-LOAD-DIAGNOSIS.md](reference/SLOW-LOAD-DIAGNOSIS.md)),
   an eGPU endgame save from 30 to 71 fps (also usable on its own, see
-  [MEMSTEER.md](MEMSTEER.md)), and the engine's thread pinning undone.
+  [MEMSTEER.md](MEMSTEER.md)), the engine's thread pinning undone, and mod
+  archives corrected for what only Linux trips over (below).
 - **Native plugins**: shared libraries dropped in
   `~/.local/share/bg3le/plugins` load with the game, no launch option
   needed, and expose their settings to Lua (and so to MCM). See
@@ -221,6 +222,27 @@ removes it at startup, as bg3se does; `BG3LE_KEEP_SANITY_CHECK=1` keeps it,
 which is how that was attributed (14 modules with it, 69 without).
 [reference/MOD-LOADING.md](reference/MOD-LOADING.md) has the rest, including
 that a savegame's module list replaces the load order.
+
+Two things in mod archives work on Windows and break the native build, and
+bg3le reads a corrected copy of any archive that has them:
+
+- **Empty files.** An empty `Stats/Generated/Data/*.txt` hangs the first load
+  at about 95%. Every empty file is given a single newline.
+- **Case.** Linux file names are case-sensitive. Where a mod's own files refer
+  to a file it contains with different case (paths in `.lsx`, `.lsf`, stats,
+  Lua and JSON, GUI metadata keys, stats `Icon` names), the name and the
+  references are made to agree, lowercase where they differ. Spellings the
+  engine derives win: GUI textures are always `.DDS`, as every one in the base
+  game is, and a `.dds` shows the missing-texture "?".
+
+The player's files are not touched. The copy, in `~/.local/share/bg3le/pakfix/`,
+holds only the changed files and a new file list, a few kilobytes; every other
+entry points into the original, which the game reads as the copy's second part.
+It is rebuilt only when the archive changes, and copies for archives no longer
+installed are removed.
+Every fix is logged as `pakfix: <archive>: ...`. `BG3LE_PAKFIX=0` turns it
+off, and `build/pakfix IN.pak OUT.pak` writes the same copy and lists the
+fixes.
 
 ### Surviving game updates
 

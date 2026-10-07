@@ -405,6 +405,36 @@ char const* client_game_state() {
     return state_name(state);
 }
 
+// esv::GameState, in upstream's order (Enumerations/Engine.inl).
+constexpr char const* kServerStates[] = {
+    "Unknown", "Uninitialized", "Init", "Idle", "Exit", "LoadLevel",
+    "LoadModule", "LoadSession", "UnloadLevel", "UnloadModule",
+    "UnloadSession", "Sync", "Paused", "Running", "Save", "Disconnect",
+    "BuildStory", "ReloadStory"};
+// EoCServer::GameStateMachine, and its State, as upstream lays them out;
+// checked live (Running reads 13).
+constexpr std::size_t kServerMachine = 0xa0;
+constexpr std::size_t kServerMachineState = 0x10;
+
+char const* server_game_state() {
+    void* server = nullptr;
+    void* machine = nullptr;
+    std::uint32_t state = 0;
+    if (target::EoCServer() == 0
+        || !safe_read(reinterpret_cast<void*>(load_bias() + target::EoCServer()), &server,
+                      sizeof(server))
+        || server == nullptr
+        || !safe_read(static_cast<char*>(server) + kServerMachine, &machine,
+                      sizeof(machine))
+        || machine == nullptr
+        || !safe_read(static_cast<char*>(machine) + kServerMachineState, &state,
+                      sizeof(state))
+        || state >= sizeof(kServerStates) / sizeof(kServerStates[0])) {
+        return nullptr;
+    }
+    return kServerStates[state];
+}
+
 void install_game_state_hook() {
     void* original = nullptr;
     if (hook_slot(target::LoadModuleExitSlot(), target::LoadModuleExit(),

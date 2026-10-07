@@ -56,6 +56,10 @@ private:
     RenderingBackend* renderer_{ nullptr };
     HashMap<FixedString, TextureRefCount> refCounts_;
     HashMap<FixedString, TextureUnloadRequest> pendingUnloads_;
+    // bg3le: registrations replaced after their view died, released like an unload.
+    std::vector<std::pair<FixedString, TextureUnloadRequest>> stale_;
+
+    std::optional<TextureRefCount> LoadTexture(FixedString const& textureGuid, TextureDescriptor* resident);
 };
 
 class IMGUIManager
@@ -88,6 +92,8 @@ public:
         TextureDescriptor* resident = nullptr);
     void UnregisterTexture(TextureOpaqueHandle id, FixedString const& textureGuid);
     std::optional<ImTextureID> BindTexture(TextureOpaqueHandle opaqueHandle);
+    // bg3le: false once the engine has destroyed the texture's view.
+    bool IsTextureLive(TextureOpaqueHandle opaqueHandle);
     bool LoadFont(FixedString const& name, char const* path, float size);
     FontData* GetFont(FixedString const& name);
     void SetScale(float scale);

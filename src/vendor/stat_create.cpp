@@ -28,6 +28,7 @@ extern "C" std::size_t bg3le_stats_list_attr_count(char const* listName);
 extern "C" bool bg3le_stats_list_attr_at(char const* listName, std::size_t index,
                                          char const** nameOut, char const** typeOut);
 extern "C" void bg3le_stats_objects_changed();
+extern "C" void bg3le_stats_appended(void const* object);
 extern "C" bool bg3le_fixed_string_index_of(char const* wanted, std::uint32_t* out);
 extern "C" bool bg3le_fixed_string_intern(char const* text, std::uint32_t* out);
 
@@ -151,6 +152,7 @@ extern "C" void* bg3le_stats_create(char const* name, char const* listName, char
     }
     put<std::int32_t>(manager, offsetof(Manager, NextHandle), nextHandle + 1);
     bg3le_stats_objects_changed();
+    bg3le_stats_appended(object);
     logf("stats: created %s (%s), handle %d", name, listName, nextHandle);
     return object;
 }

@@ -1,5 +1,80 @@
 # Changelog
 
+## v0.3.1 (2026-10-07)
+
+- Fixed a crash loading any save when a mod writes a stat condition before the load, at the main menu. A condition
+  longer than 15 characters kept its text in a buffer from the wrong allocator, and the engine frees every
+  condition's buffer when it resets the stats for a load. The buffer now comes from the engine's own heap.
+- The release zip carries a `VERSION` file, which `install.py` copies to `~/.local/share/bg3le/version`, so mod
+  managers can tell the installed release from the newest one. Releases are also published on GitHub, where
+  Amethyst Mod Manager's bg3le wizard finds them.
+
+## v0.3.0 (2026-10-06)
+
+- MCM and other ImGui windows are smooth again on Linux. Input the overlay keeps from the game was hidden by
+  telling the game its event queue was empty, as upstream does; Linux delivers every pointer motion (Windows
+  coalesces them), so with the cursor over a window the game took one event a frame, the rest backed up, and the
+  overlay skipped frames. The kept events are now skipped over instead.
+- Fixed a crash in the NVIDIA driver opening MCM (`ImGui_ImplVulkan_AddTexture`): bg3le now tracks the game's
+  image views and refuses to draw a texture whose view is not live, logging which one, instead of handing the driver
+  a bad handle.
+- MCM icons no longer go missing: ImGui images hold a reference to their texture through the engine's
+  `TextureManager`, as upstream's do, so the engine keeps it loaded, and an image whose view is replaced anyway binds
+  the new one. A dead view is logged as destroyed or never seen created, to tell which. ImGui images of a texture
+  resource (not an icon) load too.
+- Fixed a crash loading a save when a mod syncs a spell during load (`Ext.Stats.Sync`; Expansion). bg3le indexed the
+  engine's prototypes once, sometimes at the main menu, and the engine rebuilds them when a save loads, so a sync
+  could hand the engine a freed prototype. Every lookup is now checked against the engine's live map, and the index
+  read again when the engine has rebuilt it.
+- `Ext.Stats.GetCachedSpell`, `GetCachedStatus`, `GetCachedInterrupt` and `GetCachedPassive` no longer list every
+  prototype on each call.
+- Enum fields on objects and components are upstream's `EnumValue`s (`Label`, `Value`, `EnumName`), equal to and
+  ordered against their label or number, their label as a table key, and their label in JSON and `Serialize`.
+  Progression Preview read `DiceValue.Label`. Two small changes to the Lua fork make the comparisons and keys work;
+  see `external/lua/README.bg3le`.
+- `getmetatable` on an entity gives `"EntityProxy"`, as upstream's does; FocusCore's character test (EasyCheat)
+  depended on it, so EasyCheat's party, camp and unrecruited lists were empty and teleporting spammed errors.
+- The server now gets `GameStateChanged` too (LoadSession, Sync, Running, Save, ...), and `Ext.Utils.GetGameState`
+  reports the server's state there. Bag of Holding Reforged builds its state on Running.
+- Every context's `StatsLoaded` comes before any `SessionLoaded`, as upstream's do. UAWarCaster creates its statuses
+  in a client `StatsLoaded` that the server checks for.
+- `Ext.Entity.HandleToUuid` takes an entity (EasyCheat via AahzLib); lists with holes are written as upstream does,
+  skipping the hole (Subclass Compatibility Framework's spell lists); upstream's legacy field names (`field_1` for
+  `Controller` and the rest) resolve again (Auto-Sorting Hotbar); the `Tick` event's time carries `Ticks`
+  (Mazzle's EZ-Documentation).
+- Loading is faster: a session load with this setup went from about 60 s to 30 s. `Ext.Stats.Create` no longer
+  rebuilds the stats index, stat reads skip most of their fault-tolerant memory reads, functor attributes read
+  lazily, and class field tables are built once.
+- Corrected mod archives are now a few kilobytes on any filesystem: the copy holds only the changed files and its
+  file list, and the original is read as its second part. Copies of the previous format and of archives no longer
+  installed are removed. A bare file name or a relative Lua path outside the mod's own `ScriptExtender/Lua` is no
+  longer taken for a reference (Mazzle's EZ-Documentation keeps a `config.json` under `Ext.IO`).
+
+## v0.2.6 (2026-10-06)
+
+- Mod archives are corrected for two things the native build trips over and Windows does not, by reading a fixed
+  copy in place of the original (`~/.local/share/bg3le/pakfix/`; the player's files are not touched):
+  - Empty files are given a single newline. An empty stats `.txt` hung the first load at about 95% (Expansion,
+    and likely Druid Wild Shape Overhaul); Cilraaz found an empty `.khn` crashing Goon's Barbarian Overhaul
+    (not yet retested with the newline).
+  - Where a mod's own files refer to a file it contains with different case, the names and references are made
+    to agree, lowercase where they differ. GUI textures become `.DDS`, as the engine requires: a `.dds` icon
+    showed the missing-texture "?" (Expansion, 5e Spells, Mind Weaver, Clerics and others).
+
+  Every fix is logged as `pakfix: <archive>: ...`; `BG3LE_PAKFIX=0` turns it off.
+
+## v0.2.5 (2026-10-05)
+
+- Fixed a crash at startup on the Steam Deck in the game's Wwise audio engine (`JobManager_dispatchMultiple`, about
+  20 seconds in). bg3le widened every thread's CPU affinity, including the three Wwise pins to its own cores; freed,
+  its event thread could dispatch before the job manager's queues existed. Wwise's threads are now left as it sets
+  them; the engine's own threads are still widened. `BG3LE_AFFINITY=off` was the workaround.
+- Mods packed with zstd (newer LSLib builds) now load: their `meta.lsx` and scripts could not be read, so their
+  scripts never ran (AutomaticMagicalSecretsExtender). Zstandard's decompressor is vendored next to LZ4.
+- On a first launch, or the first after a game update, client mods now wait for bg3le to find the game's module
+  list instead of loading without it. Mods that call `Ext.Mod.GetMod` as they load (MCM) failed with "0 loaded,
+  0 available".
+
 ## v0.2.4 (2026-10-04)
 
 - Fixed components of an entity created this tick reading as nil: an item just made with `Osi.CreateAt` keeps its

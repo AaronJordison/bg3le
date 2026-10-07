@@ -21,6 +21,10 @@ std::uintptr_t TransformInit();
 std::uintptr_t FileReaderDtor();
 // ls::FileReader's constructor
 std::uintptr_t FileReaderCtor();
+// ls::TextureManager::LoadTexture(id, streaming, srgb, 1): takes a reference to a tracked texture
+std::uintptr_t TextureManagerLoad();
+// ls::TextureManager::UnloadTexture(id): drops one
+std::uintptr_t TextureManagerUnload();
 // the Wwise manager's SetSwitch
 std::uintptr_t WwiseSetSwitch();
 // stats functor parser
@@ -61,6 +65,8 @@ std::uintptr_t StateMachineVtable();
 std::uintptr_t FunctorsVtable();
 std::uintptr_t UpdateMessagesSlot();
 std::uintptr_t EoCClient();
+// esv::EoCServer*, whose GameStateMachine (+0xa0) holds the server state.
+std::uintptr_t EoCServer();
 std::uintptr_t StatsGlobal();
 std::uintptr_t BoostsManager();
 std::uintptr_t ClientLevelManager();
