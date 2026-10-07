@@ -624,7 +624,9 @@
 @@ lua_pointer2str converts a pointer to a readable string in a
 ** non-specified way.
 */
-#define lua_pointer2str(buff,sz,p)	l_sprintf(buff,sz,"%p",p)
+/* bg3le: as MSVC prints %p, which mods parse (tostring({}) with tonumber(s, 16)). */
+#define lua_pointer2str(buff,sz,p)	l_sprintf(buff,sz,"%016llX", \
+                                          (unsigned long long)(size_t)(p))
 
 
 /*
