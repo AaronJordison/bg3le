@@ -12521,7 +12521,9 @@ make_map = function(handle, comp, path)
       if i == nil then return nil end
       return value_at(i)
     end,
-    -- As upstream's map proxy: a new key is added, and nil removes one.
+    -- As upstream's map proxy: a new key is added, and nil removes one. A
+    -- table for a struct value is a default value filled from it, replacing
+    -- any existing one, as upstream's get<TValue> and insert make it.
     __newindex = function(_, key, value)
       local i = slot_of(key)
       if value == nil then
@@ -12531,11 +12533,20 @@ make_map = function(handle, comp, path)
         end
         return
       end
+      local struct = type(value) == "table"
+        and Ext._Internal.FieldInfo(comp, path .. "[0]") == "struct"
+      if struct and i ~= nil and Ext._Internal.MapEdit(handle, comp, path, key, false) then
+        i = nil
+      end
       if i == nil then
         local ok, err = Ext._Internal.MapEdit(handle, comp, path, key, true)
         if not ok then error("bg3le: " .. tostring(err), 0) end
         i = slot_of(key)
         if i == nil then error("bg3le: " .. comp .. "." .. path .. " did not take the key", 0) end
+      end
+      if struct then
+        Ext.Types.Unserialize(value_at(i), value)
+        return
       end
       local ok, err = Ext._Internal.SetField(
         handle, comp, path .. "[" .. i .. "]", value)
@@ -14201,7 +14212,8 @@ local function read_object_path(addr, class, path, kind)
     end
     scan()
     -- As a component's map, and upstream's map proxy: an existing key's value
-    -- writes through, a new key is added, and nil removes one.
+    -- writes through, a new key is added, nil removes one, and a table for a
+    -- struct value replaces it with a default value filled from the table.
     local function write(k, v)
       local i = slots[k]
       if v == nil then
@@ -14212,6 +14224,12 @@ local function read_object_path(addr, class, path, kind)
         end
         return
       end
+      local struct = type(v) == "table"
+        and Ext._Internal.ObjectFieldInfo(class, path .. "[0]") == "struct"
+      if struct and i ~= nil and Ext._Internal.ObjectMapEdit(addr, class, path, k, false) then
+        scan()
+        i = nil
+      end
       if i == nil then
         local ok, err = Ext._Internal.ObjectMapEdit(addr, class, path, k, true)
         if not ok then error("bg3le: " .. tostring(err), 0) end
@@ -14220,8 +14238,12 @@ local function read_object_path(addr, class, path, kind)
         if i == nil then error("bg3le: " .. class .. "." .. path .. " did not take the key", 0) end
       end
       local element = path .. "[" .. i .. "]"
-      local ok, err = Ext._Internal.ObjectSetField(addr, class, element, v)
-      if not ok then error("bg3le: " .. tostring(err), 0) end
+      if struct then
+        Ext.Types.Unserialize(read_object_path(addr, class, element, "struct"), v)
+      else
+        local ok, err = Ext._Internal.ObjectSetField(addr, class, element, v)
+        if not ok then error("bg3le: " .. tostring(err), 0) end
+      end
       items[k] = read_object_path(addr, class, element,
                                   Ext._Internal.ObjectFieldInfo(class, element))
     end
