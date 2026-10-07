@@ -1538,8 +1538,9 @@ AddStrProc add_str() {
     return proc;
 }
 
+// The empty string is index 0 of the table, so 0 is a valid handle for "".
 std::uint64_t intern_string(char const* text, bool guid) {
-    if (text == nullptr || text[0] == '\0') return 0;
+    if (text == nullptr) return 0;
 
     // A table whose record array does not read is not one to hand AddStr.
     std::uintptr_t records = 0;
@@ -2545,15 +2546,14 @@ bool encode_arg(char const* key, std::size_t i, std::uint16_t declared,
     case kTypeGuidString: {
         const std::uint64_t handle = intern_string(
             arg.text.c_str(), base == kTypeGuidString);
-        if (handle == 0) {
+        if (handle == 0 && !arg.text.empty()) {
             if (why != nullptr) {
                 *why = std::string("argument ") + std::to_string(i + 1) + " of " + key
-                       + (arg.text.empty() ? " is an empty string"
-                                           : " could not be interned");
+                       + " could not be interned";
             }
             return false;
         }
-        interned->push_back(handle);
+        if (handle != 0) interned->push_back(handle);
         value.Value = handle;
         break;
     }
