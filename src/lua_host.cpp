@@ -9505,6 +9505,8 @@ make_widget = function(handle)
 end
 
 function Ext.IMGUI.NewWindow(name)
+  -- A number is its text, as upstream's luaL_checkstring takes it.
+  if type(name) == "number" then name = tostring(name) end
   if type(name) ~= "string" then
     error("Ext.IMGUI.NewWindow(name) takes a name", 2)
   end
@@ -9565,6 +9567,8 @@ end
 -- A path relative to the game's data, or empty for the default the language
 -- picks.
 function Ext.IMGUI.LoadFont(name, path, size)
+  -- A number is its text, as upstream's luaL_checkstring takes it.
+  if type(name) == "number" then name = tostring(name) end
   if type(name) ~= "string" then
     error("Ext.IMGUI.LoadFont(name, path, size) takes a name", 2)
   end
