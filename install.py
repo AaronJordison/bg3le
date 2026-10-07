@@ -356,6 +356,16 @@ def main():
         print("  %s" % os.path.relpath(dst, target))
         if not args.dry_run:
             copy_atomic(src, dst, mode)
+    # The release's version, for mod managers; a build from source has none,
+    # so an older release's is removed rather than left claiming it.
+    version_src = os.path.join(HERE, "VERSION")
+    version_dst = os.path.join(target, "version")
+    if os.path.isfile(version_src):
+        print("  version")
+        if not args.dry_run:
+            copy_atomic(version_src, version_dst, 0o644)
+    elif not args.dry_run and os.path.exists(version_dst):
+        os.remove(version_dst)
     print("Steam launch options:")
     edit_configs(configs, transform, args.dry_run)
     print(("Done: the next launch from Steam loads bg3le." + restart) if not args.dry_run
