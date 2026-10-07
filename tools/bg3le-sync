@@ -37,8 +37,9 @@ if [ "$BEHIND" -gt 0 ]; then
 fi
 
 if [ "$BUILD" -eq 1 ]; then
-  printf '  building\n'
-  cmake --build build -j16 >/dev/null
+  printf '  building (minutes after a merge; output streams below — it is not hung)\n'
+  cmake --build build -j16 | grep --line-buffered -E '^\[|Built target|Error|error|warning' \
+    | while IFS= read -r line; do printf '    %s\n' "$line"; done
 fi
 
 git push forgejo "$BRANCH"
