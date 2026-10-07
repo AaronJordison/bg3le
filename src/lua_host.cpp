@@ -3919,8 +3919,27 @@ void read_imgui_args(lua_State* L, int first, ImguiArg* out,
             arg.Text = lua_tostring(L, at);
             break;
 
+        case LUA_TUSERDATA: {
+            // A widget (userdata, as upstream's) answers Handle through __index;
+            // other bg3le objects (entities) answer it too, so check the type.
+            bool widget = false;
+            if (lua_getmetatable(L, at)) {
+                lua_getfield(L, -1, "__name");
+                char const* name = lua_tostring(L, -1);
+                widget = name != nullptr && std::strcmp(name, "ImguiHandle") == 0;
+                lua_pop(L, 2);
+            }
+            if (widget) {
+                lua_getfield(L, at, "Handle");
+                arg.Kind = kImguiArgHandle;
+                arg.Handle = (std::uint64_t)lua_tointeger(L, -1);
+                lua_pop(L, 1);
+            }
+            break;
+        }
+
         case LUA_TTABLE: {
-            // A widget, if it carries a handle; a vector otherwise.
+            // A vector; or a widget table, if it carries a handle.
             lua_getfield(L, at, "Handle");
             if (lua_isinteger(L, -1)) {
                 arg.Kind = kImguiArgHandle;
@@ -9284,12 +9303,17 @@ local imgui_userdata = {}
 -- same table each time and `self` behaves. Weak-valued, so a widget the mod
 -- has dropped does not keep its table alive.
 local imgui_widgets = setmetatable({}, {__mode = "v"})
+-- Each widget's Handle and Callbacks. Widgets are userdata, as upstream's are
+-- (mods tell one widget from a list of them by type()), so nothing lives on
+-- the widget itself.
+-- (On the metatable rather than a local: the prelude is at Lua's local limit.)
+imgui_widget.__bg3leState = setmetatable({}, {__mode = "k"})
 
 local imgui_methods = {}
 
 function imgui_methods:Destroy()
-  local handle = rawget(self, "Handle")
-  for _, id in pairs(rawget(self, "Callbacks") or {}) do
+  local handle = imgui_widget.__bg3leState[self].Handle
+  for _, id in pairs(imgui_widget.__bg3leState[self].Callbacks or {}) do
     imgui_callbacks[id] = nil
   end
   imgui_widgets[handle] = nil
@@ -9301,7 +9325,8 @@ imgui_widget.__index = function(self, key)
   local method = imgui_methods[key]
   if method ~= nil then return method end
 
-  local handle = rawget(self, "Handle")
+  local handle = imgui_widget.__bg3leState[self].Handle
+  if key == "Handle" then return handle end
   if key == "UserData" then return imgui_userdata[handle] end
 
   -- An Add* call: make the child and hand back a widget for it.
@@ -9318,7 +9343,7 @@ imgui_widget.__index = function(self, key)
 
   -- An event reads back as the function that was set, which is what
   -- upstream's delegate does.
-  local registered = rawget(self, "Callbacks")
+  local registered = imgui_widget.__bg3leState[self].Callbacks
   if registered ~= nil and registered[key] ~= nil then
     return imgui_callbacks[registered[key]]
   end
@@ -9383,7 +9408,7 @@ imgui_widget.__index = function(self, key)
 end
 
 imgui_widget.__newindex = function(self, key, value)
-  local handle = rawget(self, "Handle")
+  local handle = imgui_widget.__bg3leState[self].Handle
   if key == "UserData" then
     imgui_userdata[handle] = value
     return
@@ -9391,11 +9416,11 @@ imgui_widget.__newindex = function(self, key, value)
 
   -- A function can only be an event handler: no other property of a widget
   -- takes one, and the C side refuses a name that is not a delegate.
-  local registered = rawget(self, "Callbacks")
+  local registered = imgui_widget.__bg3leState[self].Callbacks
   if type(value) == "function" or registered ~= nil and registered[key] then
     if registered == nil then
       registered = {}
-      rawset(self, "Callbacks", registered)
+      imgui_widget.__bg3leState[self].Callbacks = registered
     end
 
     local was = registered[key]
@@ -9452,7 +9477,8 @@ make_widget = function(handle)
   local existing = imgui_widgets[handle]
   if existing ~= nil then return existing end
 
-  local widget = setmetatable({Handle = handle}, imgui_widget)
+  local widget = Ext._Internal.NewObjectProxy(imgui_widget)
+  imgui_widget.__bg3leState[widget] = {Handle = handle}
   imgui_widgets[handle] = widget
   return widget
 end
