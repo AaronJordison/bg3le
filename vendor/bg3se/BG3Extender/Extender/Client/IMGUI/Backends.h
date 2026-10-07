@@ -27,6 +27,8 @@ public:
     virtual std::optional<TextureLoadResult> RegisterTexture(TextureDescriptor* descriptor) = 0;
     virtual void UnregisterTexture(TextureOpaqueHandle opaqueHandle) = 0;
     virtual std::optional<ImTextureID> BindTexture(TextureOpaqueHandle opaqueHandle) = 0;
+    // bg3le: false once the engine has destroyed the texture's view.
+    virtual bool IsTextureLive(TextureOpaqueHandle opaqueHandle) { return true; }
     virtual bool IsInitialized() = 0;
     virtual void ReloadFonts() = 0;
     virtual glm::ivec2 GetViewportSize() = 0;

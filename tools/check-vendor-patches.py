@@ -148,8 +148,9 @@ CHECKS = [
      lambda: "ls__gTextureAtlasMap == nullptr" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")),
     ("IMGUIManager::Update draws ShowErrorAndExitGame's dialog",
      lambda: "bg3le_imgui_draw_error();" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")),
-    ("IncTextureRef tolerates a missing resource bank",
-     lambda: "auto bank = GetStaticSymbols().GetCurrentResourceBank();" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")),
+    ("the IMGUI texture loader takes engine references through bg3le",
+     lambda: "bg3le_texture_acquire(textureGuid.Index)" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")
+             and "bg3le_texture_release(it.Key().Index)" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")),
     ("Noesis builtins forward to the game",
      lambda: "#include <bg3le_noesis_builtins.inl>" in text("BG3Extender/Lua/Libs/ClientUI/Builtins.inl")
              and text("BG3Extender/GameDefinitions/UI.h").count("#if !defined(BG3LE_NOESIS_FORWARD)") == 2),
@@ -159,8 +160,9 @@ CHECKS = [
     ("the Vulkan overlay is composited onto an HDR swapchain",
      lambda: "bg3le::hdr_record(image.commandBuffer" in text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl")
              and "bg3le::hdr_swapchain_created(" in text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl")),
-    ("the Vulkan overlay draws only live image views",
-     lambda: text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl").count("bg3le::vk_image_view_live(") == 2),
+    ("the Vulkan overlay draws only live image views, and images re-bind dead ones",
+     lambda: text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl").count("bg3le::vk_image_view_live(") == 3
+             and "!gExtender->IMGUI().IsTextureLive(TextureHandle)" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")),
     ("icon atlases register their resident texture",
      lambda: "reinterpret_cast<TextureDescriptor*>(atlas->Texture)" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")
              and "bool Resident{ false };" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.h")),

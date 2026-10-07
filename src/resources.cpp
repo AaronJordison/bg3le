@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "debug_server.h"
+#include "hook.h"
 #include "log.h"
 #include "resolve.h"
 #include "targets.h"
@@ -270,4 +271,44 @@ extern "C" void* bg3le_ls_resource_manager() {
     std::uintptr_t mgr = 0;
     if (bg3le::g_global == 0 || !bg3le::peek(bg3le::g_global, &mgr)) return nullptr;
     return (void*)mgr;
+}
+
+// A reference to a texture the engine tracks, taken and dropped as upstream's
+// IMGUI loader does through AppliedMaterial::LoadTexture and
+// TextureManager::UnloadTexture. Acquire returns the TextureDescriptor, or null
+// when the TextureManager does not track the id or has not loaded it.
+namespace {
+// ResourceManager::TextureManager; TextureResource's Streaming and SRGB.
+constexpr std::uintptr_t kTextureManager = 0xa8;
+constexpr std::uintptr_t kTextureStreaming = 0x34;
+constexpr std::uintptr_t kTextureSrgb = 0x35;
+constexpr std::uint32_t kTextureBank = 4;
+
+std::uintptr_t texture_manager() {
+    auto const mgr = (std::uintptr_t)bg3le_ls_resource_manager();
+    std::uintptr_t tm = 0;
+    return mgr != 0 && bg3le::peek(mgr + kTextureManager, &tm) ? tm : 0;
+}
+}  // namespace
+
+extern "C" void* bg3le_texture_acquire(std::uint32_t id) {
+    using Fn = void* (*)(std::uintptr_t, std::uint32_t const*, int, int, int);
+    const std::uintptr_t at = bg3le::target::TextureManagerLoad();
+    const std::uintptr_t tm = texture_manager();
+    if (at == 0 || tm == 0) return nullptr;
+    // The flags only matter if the engine has to load it again.
+    std::uint8_t streaming = 0, srgb = 0;
+    if (auto const res = (std::uintptr_t)bg3le_resource_bank_get(kTextureBank, id)) {
+        bg3le::peek(res + kTextureStreaming, &streaming);
+        bg3le::peek(res + kTextureSrgb, &srgb);
+    }
+    return reinterpret_cast<Fn>(bg3le::load_bias() + at)(tm, &id, streaming, srgb, 1);
+}
+
+extern "C" bool bg3le_texture_release(std::uint32_t id) {
+    using Fn = bool (*)(std::uintptr_t, std::uint32_t const*);
+    const std::uintptr_t at = bg3le::target::TextureManagerUnload();
+    const std::uintptr_t tm = texture_manager();
+    if (at == 0 || tm == 0) return false;
+    return reinterpret_cast<Fn>(bg3le::load_bias() + at)(tm, &id);
 }

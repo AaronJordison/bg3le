@@ -9,6 +9,16 @@
 - Fixed a crash in the NVIDIA driver opening MCM (`ImGui_ImplVulkan_AddTexture`): bg3le now tracks the game's
   image views and refuses to draw a texture whose view is not live, logging which one, instead of handing the driver
   a bad handle.
+- MCM icons no longer go missing: ImGui images hold a reference to their texture through the engine's
+  `TextureManager`, as upstream's do, so the engine keeps it loaded, and an image whose view is replaced anyway binds
+  the new one. A dead view is logged as destroyed or never seen created, to tell which. ImGui images of a texture
+  resource (not an icon) load too.
+- Fixed a crash loading a save when a mod syncs a spell during load (`Ext.Stats.Sync`; Expansion). bg3le indexed the
+  engine's prototypes once, sometimes at the main menu, and the engine rebuilds them when a save loads, so a sync
+  could hand the engine a freed prototype. Every lookup is now checked against the engine's live map, and the index
+  read again when the engine has rebuilt it.
+- `Ext.Stats.GetCachedSpell`, `GetCachedStatus`, `GetCachedInterrupt` and `GetCachedPassive` no longer list every
+  prototype on each call.
 - Enum fields on objects and components are upstream's `EnumValue`s (`Label`, `Value`, `EnumName`), equal to and
   ordered against their label or number, their label as a table key, and their label in JSON and `Serialize`.
   Progression Preview read `DiceValue.Label`. Two small changes to the Lua fork make the comparisons and keys work;

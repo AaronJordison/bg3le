@@ -22,6 +22,28 @@ namespace bg3le { void logf(const char* fmt, ...); }
 
 // bg3le: ShowErrorAndExitGame's dialog, drawn over the mods' windows.
 extern "C" void bg3le_imgui_draw_error();
+// bg3le: the engine's TextureManager and resource banks, through src/resources.cpp.
+extern "C" void* bg3le_texture_acquire(uint32_t id);
+extern "C" bool bg3le_texture_release(uint32_t id);
+extern "C" void* bg3le_resource_bank_get(uint32_t type, uint32_t key);
+namespace bg3le { bool safe_read(const void* addr, void* out, std::size_t n); }
+
+// bg3le: a descriptor's first view as it is now, read without trusting the descriptor.
+static void* bg3le_descriptor_view(bg3se::TextureDescriptor* descriptor)
+{
+    if (!descriptor) return nullptr;
+    auto views = reinterpret_cast<char const*>(&descriptor->Vulkan.Views);
+    void* buf = nullptr;
+    uint32_t size = 0;
+    void* imageView = nullptr;
+    void* view = nullptr;
+    if (!bg3le::safe_read(views, &buf, sizeof(buf)) || !bg3le::safe_read(views + 12, &size, sizeof(size))
+        || size == 0 || !bg3le::safe_read(buf, &imageView, sizeof(imageView))
+        || !bg3le::safe_read(static_cast<char const*>(imageView) + 8, &view, sizeof(view))) {
+        return nullptr;
+    }
+    return view;
+}
 
 BEGIN_NS(extui)
 
@@ -108,6 +130,26 @@ bool ImageReference::BindIcon(FixedString const& iconName)
 
 ImTextureID ImageReference::PrepareRender()
 {
+    // bg3le: the engine destroyed the view under this image; bind its current one.
+    if (TextureHandle && !gExtender->IMGUI().IsTextureLive(TextureHandle)) {
+        auto icon = Icon;
+        auto texture = TextureResource;
+        auto oldView = static_cast<VkImageView>(TextureHandle);
+        char const* oldState = bg3le::vk_image_view_state(oldView);
+        gExtender->IMGUI().UnregisterTexture(TextureHandle, TextureResource);
+        TextureHandle = 0;
+        TextureId = ImTextureID();
+        const bool bound = icon ? BindIcon(icon) : (texture && BindTexture(texture));
+        // Once per dead view; many images can share one.
+        static std::unordered_set<VkImageView> logged;
+        if (logged.insert(oldView).second) {
+            IMGUI_DEBUG("image %s (texture %s): view %p is %s; %s %p", icon ? icon.GetString() : "", texture.GetString(),
+                (void*)oldView, oldState, bound ? "bound again on view" : "could not be bound again; last view",
+                bound ? TextureHandle : (void*)oldView);
+        }
+        if (!bound) return TextureId;
+    }
+
     if (TextureId) return TextureId;
     if (!IsValid()) return ImTextureID();
 
@@ -2225,10 +2267,9 @@ void IMGUITextureLoader::Update()
         if (--it.Value().WaitForFrames == 0) {
             renderer_->UnregisterTexture(it.Value().Id);
 
-            // bg3le: an atlas's resident texture was never loaded here.
-            if (!it.Value().Resident && GetStaticSymbols().ls__gGlobalResourceManager) {
-                auto textureManager = (*GetStaticSymbols().ls__gGlobalResourceManager)->TextureManager;
-                (*GetStaticSymbols().ls__TextureManager__UnloadTexture)(textureManager, it.Key());
+            // bg3le: a resident texture holds no engine reference.
+            if (!it.Value().Resident) {
+                bg3le_texture_release(it.Key().Index);
             }
 
             unloaded.push_back(it.Key());
@@ -2238,6 +2279,59 @@ void IMGUITextureLoader::Update()
     for (auto const& tex : unloaded) {
         pendingUnloads_.remove(tex);
     }
+
+    // bg3le: registrations replaced after the engine destroyed their view.
+    for (auto it = stale_.begin(); it != stale_.end();) {
+        if (--it->second.WaitForFrames == 0) {
+            renderer_->UnregisterTexture(it->second.Id);
+            if (!it->second.Resident) bg3le_texture_release(it->first.Index);
+            it = stale_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// bg3le: upstream's load, with the engine reached through bg3le. A texture
+// the TextureManager does not track (an icon atlas's) is registered as it is,
+// as resident, with no reference to drop.
+std::optional<IMGUITextureLoader::TextureRefCount> IMGUITextureLoader::LoadTexture(
+    FixedString const& textureGuid, TextureDescriptor* resident)
+{
+    if (!resident) {
+        auto tex = static_cast<resource::TextureResource*>(
+            bg3le_resource_bank_get((uint32_t)ResourceBankType::Texture, textureGuid.Index));
+        if (!tex) {
+            return {};
+        }
+
+        if (tex->Type != TextureType::T1D // shouldn't be here, but tex type is set incorrectly for some atlases
+            && tex->Type != TextureType::T2D) {
+            ERR("Cannot render texture '%s': expected 2D texture, got %d", textureGuid.GetString(), tex->Type);
+            return {};
+        }
+    }
+
+    auto descriptor = static_cast<TextureDescriptor*>(bg3le_texture_acquire(textureGuid.Index));
+    if (!descriptor) {
+        if (!resident) return {};
+        auto loadResult = renderer_->RegisterTexture(resident);
+        IMGUI_DEBUG("atlas texture %s: not tracked, registered as resident; view %p", textureGuid.GetString(),
+            loadResult ? loadResult->OpaqueHandle : nullptr);
+        if (!loadResult) return {};
+        return TextureRefCount{ resident, *loadResult, 0, true };
+    }
+
+    auto loadResult = renderer_->RegisterTexture(descriptor);
+    IMGUI_DEBUG("%s %s: engine reference taken%s; view %p", resident ? "atlas texture" : "texture",
+        textureGuid.GetString(), resident && descriptor != resident ? ", on another descriptor" : "",
+        loadResult ? loadResult->OpaqueHandle : nullptr);
+    if (!loadResult) {
+        bg3le_texture_release(textureGuid.Index);
+        return {};
+    }
+
+    return TextureRefCount{ descriptor, *loadResult, 0, false };
 }
 
 std::optional<TextureLoadResult> IMGUITextureLoader::IncTextureRef(FixedString const& textureGuid,
@@ -2250,50 +2344,46 @@ std::optional<TextureLoadResult> IMGUITextureLoader::IncTextureRef(FixedString c
 
     auto refs = refCounts_.try_get(textureGuid);
     if (refs) {
+        // bg3le: the engine can destroy a view under a registration; replace it.
+        if (!renderer_->IsTextureLive(refs->LoadResult.OpaqueHandle)) {
+            auto oldView = static_cast<VkImageView>(refs->LoadResult.OpaqueHandle);
+            auto nowView = static_cast<VkImageView>(bg3le_descriptor_view(refs->Descriptor));
+            IMGUI_DEBUG("texture %s: view %p is %s; descriptor %p now has view %p (%s)", textureGuid.GetString(),
+                (void*)oldView, bg3le::vk_image_view_state(oldView), (void*)refs->Descriptor, (void*)nowView,
+                nowView ? bg3le::vk_image_view_state(nowView) : "unreadable");
+            auto fresh = LoadTexture(textureGuid, resident);
+            if (!fresh) {
+                IMGUI_DEBUG("texture %s: could not be registered again", textureGuid.GetString());
+                return {};
+            }
+            stale_.push_back({ textureGuid, TextureUnloadRequest{ refs->LoadResult.OpaqueHandle, DeleteAfterFrames, refs->Resident } });
+            fresh->RefCount = refs->RefCount;
+            *refs = *fresh;
+        }
         refs->RefCount++;
         return refs->LoadResult;
     }
 
-    // bg3le: a texture the engine already holds (an icon atlas's) is
-    // registered as it is, with nothing loaded and nothing to unload.
-    if (resident) {
-        auto loadResult = renderer_->RegisterTexture(resident);
-        if (!loadResult) return {};
-        refCounts_.set(textureGuid, TextureRefCount{ resident, *loadResult, 1, true });
+    auto fresh = LoadTexture(textureGuid, resident);
+    if (!fresh) {
+        return {};
+    }
+
+    // bg3le: a release still pending is dropped now; upstream leaked its engine
+    // reference. Its registration is the new one unless the view changed.
+    auto pending = pendingUnloads_.try_get(textureGuid);
+    if (pending) {
+        if (pending->Id != fresh->LoadResult.OpaqueHandle) {
+            stale_.push_back({ textureGuid, *pending });
+        } else if (!pending->Resident) {
+            bg3le_texture_release(textureGuid.Index);
+        }
         pendingUnloads_.remove(textureGuid);
-        return *loadResult;
     }
 
-    auto bank = GetStaticSymbols().GetCurrentResourceBank();
-    if (!bank) {
-        return {};
-    }
-    auto tex = (resource::TextureResource*)bank->GetResource(ResourceBankType::Texture, textureGuid);
-    if (!tex) {
-        return {};
-    }
-    
-    if (tex->Type != TextureType::T1D // shouldn't be here, but tex type is set incorrectly for some atlases
-        && tex->Type != TextureType::T2D) {
-        ERR("Cannot render texture '%s': expected 2D texture, got %d", textureGuid.GetString(), tex->Type);
-        return {};
-    }
-
-    auto descriptor = (*GetStaticSymbols().ls__AppliedMaterial__LoadTexture)(nullptr, textureGuid);
-    if (!descriptor) {
-        return {};
-    }
-
-    auto loadResult = renderer_->RegisterTexture(descriptor);
-    if (!loadResult) {
-        auto textureManager = (*GetStaticSymbols().ls__gGlobalResourceManager)->TextureManager;
-        (*GetStaticSymbols().ls__TextureManager__UnloadTexture)(textureManager, textureGuid);
-        return {};
-    }
-
-    refCounts_.set(textureGuid, TextureRefCount{ descriptor, *loadResult, 1 });
-    pendingUnloads_.remove(textureGuid);
-    return *loadResult;
+    fresh->RefCount = 1;
+    refCounts_.set(textureGuid, *fresh);
+    return fresh->LoadResult;
 }
 
 
@@ -2311,9 +2401,10 @@ bool IMGUITextureLoader::DecTextureRef(TextureOpaqueHandle id, FixedString const
     }
     
     if (--refs->RefCount == 0) {
-        const bool resident = refs->Resident;
+        // bg3le: the current registration, which a replaced view's caller no longer holds.
+        auto request = TextureUnloadRequest{ refs->LoadResult.OpaqueHandle, DeleteAfterFrames, refs->Resident };
         refCounts_.remove(textureGuid);
-        pendingUnloads_.set(textureGuid, TextureUnloadRequest{ id, DeleteAfterFrames, resident });
+        pendingUnloads_.set(textureGuid, request);
     }
 
     return true;
@@ -2333,6 +2424,11 @@ void IMGUIManager::UnregisterTexture(TextureOpaqueHandle id, FixedString const& 
 std::optional<ImTextureID> IMGUIManager::BindTexture(TextureOpaqueHandle opaqueHandle)
 {
     return renderer_->BindTexture(opaqueHandle);
+}
+
+bool IMGUIManager::IsTextureLive(TextureOpaqueHandle opaqueHandle)
+{
+    return renderer_->IsTextureLive(opaqueHandle);
 }
 
 END_NS()

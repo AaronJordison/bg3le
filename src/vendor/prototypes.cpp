@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unistd.h>
@@ -150,10 +151,28 @@ int kind_of(void const* keys, std::uint32_t count) {
     return kind_of_names(sample, n);
 }
 
+// Where a harvested prototype sat in the engine's map, to check it is still there.
+struct Slot {
+    std::uint32_t Key;
+    std::uint32_t Index;  // kNoIndex in a LegacyRefMap
+};
+constexpr std::uint32_t kNoIndex = 0xffffffffu;
+
+// What changes when the engine rebuilds a map: its buffers and its count.
+struct Signature {
+    std::uint64_t Keys{0};    // a LegacyRefMap's bucket table
+    std::uint64_t Values{0};
+    std::uint32_t Count{0};
+    bool operator==(Signature const&) const = default;
+};
+
 struct Table {
     std::unordered_map<std::string, std::uint64_t> ByName;
+    std::unordered_map<std::string, Slot> Slots;
     std::vector<std::string> Order;
     std::uint64_t MapAt{0};  // the manager's map, for adding a prototype
+    std::size_t Stride{0};   // between inline prototypes
+    Signature Sig;
 };
 
 struct Prototypes {
@@ -244,6 +263,7 @@ std::size_t harvest_inline(void const* keys, void const* values,
 
         if (into->ByName.emplace(name, (std::uint64_t)(std::uintptr_t)at)
                 .second) {
+            into->Slots.emplace(name, Slot{key, i});
             ++added;
         }
     }
@@ -276,6 +296,7 @@ std::size_t harvest(void const* keys, void const* values,
 
         if (into->ByName.emplace(name, (std::uint64_t)(std::uintptr_t)
                                            prototype).second) {
+            into->Slots.emplace(name, Slot{key, i});
             ++added;
         }
     }
@@ -377,7 +398,10 @@ std::size_t harvest_refmap(unsigned long long at, std::size_t nameOffset,
         char const* name = bg3le_fixed_string(key, nullptr);
         if (name == nullptr || name[0] == '\0') continue;
         auto const value = (std::uint64_t)(std::uintptr_t)node + kNodeValue;
-        if (into->ByName.emplace(name, value).second) ++added;
+        if (into->ByName.emplace(name, value).second) {
+            into->Slots.emplace(name, Slot{key, kNoIndex});
+            ++added;
+        }
     }
     return added;
 }
@@ -430,7 +454,18 @@ std::string static_key(std::size_t k) {
 // The map at `at`, validated as kind `k`'s manager and harvested. Shared
 // between the scan and a recorded static so neither adopts what the other
 // would reject.
+bool read_signature(unsigned long long at, std::size_t k, Signature* out) {
+    auto const* head = (char const*)(std::uintptr_t)at;
+    if (at == 0) return false;
+    if (k == kPassive) {
+        return read_as(head, &out->Count) && read_as(head + kRefMapTable, &out->Keys);
+    }
+    return read_as(head + kKeysSize, &out->Count) && read_as(head + kKeysBuffer, &out->Keys)
+           && read_as(head + kValuesBuffer, &out->Values);
+}
+
 bool harvest_map(unsigned long long at, std::size_t k, Table* into) {
+    if (!read_signature(at, k, &into->Sig)) return false;
     if (k == kPassive) {
         std::vector<std::uint32_t> keys;
         if (!refmap_consistent(at, kKinds[k].NameOffset, &keys)
@@ -467,6 +502,7 @@ bool harvest_map(unsigned long long at, std::size_t k, Table* into) {
             return false;
         }
         into->MapAt = at;
+        into->Stride = stride;
         return true;
     }
 
@@ -738,6 +774,7 @@ bool build() {
         if (added > 0) {
             at[k] = candidate.At;
             found.Kinds[k].MapAt = candidate.At;
+            found.Kinds[k].Stride = stride;
             logf("prototypes: %zu %s prototypes at %#llx, stride %zu",
                  added, kKinds[k].Name, candidate.At, stride);
         }
@@ -778,6 +815,7 @@ bool build() {
         for (auto const& entry : table.ByName) {
             table.Order.push_back(entry.first);
         }
+        read_signature(table.MapAt, k, &table.Sig);
     }
 
     // Filled first, published second.
@@ -821,11 +859,82 @@ bool ready() {
     return build();
 }
 
-Table const* table_of(int kind) {
+// Client and server Lua both look prototypes up, and a lookup can re-read a table.
+std::mutex& tables_lock() {
+    static std::mutex m;
+    return m;
+}
+
+// The table for a kind once built, or null. Ready is checked before the
+// lock is taken: the first build can scan for seconds.
+Table* table_of(int kind) {
     if (!ready() || kind < 0 || (std::size_t)kind >= std::size(kKinds)) {
         return nullptr;
     }
     return &state().Kinds[kind];
+}
+
+// Reads a kind's table again from the engine's map, which the engine
+// rebuilds when a save loads: every prototype the old table points at is
+// freed then. The manager may have moved with it, so its recorded path is
+// tried as well. On failure the table is emptied rather than left stale.
+bool refresh(std::size_t k) {
+    Table& table = state().Kinds[k];
+    Table fresh;
+    bool ok = harvest_map(table.MapAt, k, &fresh);
+    const std::string key = static_key(k);
+    for (std::size_t i = 0, n = bg3le_static_count(key.c_str()); !ok && i < n; ++i) {
+        fresh = Table{};
+        void* at = bg3le_static_get(key.c_str(), i);
+        ok = at != nullptr && harvest_map((unsigned long long)(std::uintptr_t)at, k, &fresh);
+    }
+    if (!ok) {
+        logf("prototypes: the engine rebuilt its %s prototypes and they could not be "
+             "read again; lookups return nothing", kKinds[k].Name);
+        table = Table{};
+        return false;
+    }
+    fresh.Order.reserve(fresh.ByName.size());
+    for (auto const& entry : fresh.ByName) fresh.Order.push_back(entry.first);
+    logf("prototypes: the engine rebuilt its %s prototypes; read %zu again (was %zu)",
+         kKinds[k].Name, fresh.ByName.size(), table.ByName.size());
+    table = std::move(fresh);
+    return true;
+}
+
+bool signature_current(Table const& table, std::size_t k) {
+    Signature now;
+    return read_signature(table.MapAt, k, &now) && now == table.Sig;
+}
+
+// Whether the engine's map still holds `at` for `name` where it was harvested.
+bool still_held(Table const& table, std::size_t k, std::string const& name, std::uint64_t at) {
+    if (!signature_current(table, k)) return false;
+    auto slot = table.Slots.find(name);
+    if (slot == table.Slots.end()) return true;  // one bg3le added; the signature covers it
+    std::uint32_t key = 0;
+    if (slot->second.Index == kNoIndex) {
+        return read_as((char const*)(std::uintptr_t)(at - kNodeValue + kNodeKey), &key)
+               && key == slot->second.Key;
+    }
+    if (!read_as((char const*)(std::uintptr_t)table.Sig.Keys + slot->second.Index * kKeyStride, &key)
+        || key != slot->second.Key) {
+        return false;
+    }
+    if (k == kInterrupt) return table.Sig.Values + slot->second.Index * table.Stride == at;
+    std::uint64_t value = 0;
+    return read_as((char const*)(std::uintptr_t)table.Sig.Values + slot->second.Index * kValueStride,
+                   &value)
+           && value == at;
+}
+
+// The table, read again first if the engine has rebuilt its map since.
+Table* current_table(int kind) {
+    Table* table = table_of(kind);
+    if (table != nullptr && table->MapAt != 0 && !signature_current(*table, (std::size_t)kind)) {
+        refresh((std::size_t)kind);
+    }
+    return table;
 }
 
 }  // namespace
@@ -834,38 +943,72 @@ extern "C" bool bg3le_prototypes_ready() { return ready(); }
 
 // kind: 0 spell, 1 status.
 extern "C" void* bg3le_prototype_find(int kind, char const* name) {
-    Table const* table = table_of(kind);
-    if (table == nullptr || name == nullptr) return nullptr;
+    if (table_of(kind) == nullptr || name == nullptr) return nullptr;
+    const std::lock_guard<std::mutex> held(tables_lock());
+    Table* table = current_table(kind);
 
     auto it = table->ByName.find(name);
     if (it == table->ByName.end()) return nullptr;
+    if (!still_held(*table, (std::size_t)kind, it->first, it->second)) {
+        if (!refresh((std::size_t)kind)) return nullptr;
+        it = table->ByName.find(name);
+        if (it == table->ByName.end()) return nullptr;
+    }
     return (void*)(std::uintptr_t)it->second;
 }
 
 // The manager's map for a kind, or 0.
 extern "C" void* bg3le_prototype_map(int kind) {
-    Table const* table = table_of(kind);
-    return table != nullptr ? (void*)(std::uintptr_t)table->MapAt : nullptr;
+    if (table_of(kind) == nullptr) return nullptr;
+    const std::lock_guard<std::mutex> held(tables_lock());
+    Table* table = current_table(kind);
+    return (void*)(std::uintptr_t)table->MapAt;
 }
 
-// A prototype bg3le has just added to the manager.
+// A prototype bg3le has just added to the manager, which moved the map's
+// count and perhaps its buffers.
 extern "C" void bg3le_prototype_added(int kind, char const* name, void* prototype) {
-    if (!ready() || kind < 0 || (std::size_t)kind >= std::size(kKinds) || name == nullptr) return;
+    if (table_of(kind) == nullptr || name == nullptr) return;
+    const std::lock_guard<std::mutex> held(tables_lock());
     Table& table = state().Kinds[kind];
     if (table.ByName.emplace(name, (std::uint64_t)(std::uintptr_t)prototype).second) {
         table.Order.push_back(name);
     }
+    read_signature(table.MapAt, (std::size_t)kind, &table.Sig);
 }
 
 extern "C" std::size_t bg3le_prototype_count(int kind) {
-    Table const* table = table_of(kind);
-    return table != nullptr ? table->ByName.size() : 0;
+    if (table_of(kind) == nullptr) return 0;
+    const std::lock_guard<std::mutex> held(tables_lock());
+    return current_table(kind)->ByName.size();
 }
 
+// Test hook: points one cached entry at garbage shaped like freed memory, so
+// the next lookup has to notice and read the table again. Touches bg3le's
+// index only, never the engine's.
+extern "C" bool bg3le_prototype_test_stale(int kind, char const* name) {
+    if (table_of(kind) == nullptr || name == nullptr) return false;
+    const std::lock_guard<std::mutex> held(tables_lock());
+    Table& table = state().Kinds[kind];
+    auto it = table.ByName.find(name);
+    if (it == table.ByName.end()) return false;
+    static std::uint32_t garbage[4096];
+    for (auto& word : garbage) word = 0x558b;  // a string id in sub-table 11, which does not exist
+    it->second = (std::uint64_t)(std::uintptr_t)garbage;
+    logf("prototypes: test: %s %s now points at garbage", kKinds[kind].Name, name);
+    return true;
+}
+
+// Copied out: a refresh on another thread replaces the table. Not checked
+// against the engine per name; bg3le_prototype_count, called first, did that.
 extern "C" char const* bg3le_prototype_name_at(int kind, std::size_t index) {
-    Table const* table = table_of(kind);
-    if (table == nullptr || index >= table->Order.size()) return nullptr;
-    return table->Order[index].c_str();
+    Table* table = table_of(kind);
+    if (table == nullptr) return nullptr;
+    const std::lock_guard<std::mutex> held(tables_lock());
+    if (index >= table->Order.size()) return nullptr;
+    thread_local std::string name;
+    name = table->Order[index];
+    return name.c_str();
 }
 
 }  // namespace bg3le

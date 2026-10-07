@@ -21,6 +21,10 @@ std::uintptr_t TransformInit();
 std::uintptr_t FileReaderDtor();
 // ls::FileReader's constructor
 std::uintptr_t FileReaderCtor();
+// ls::TextureManager::LoadTexture(id, streaming, srgb, 1): takes a reference to a tracked texture
+std::uintptr_t TextureManagerLoad();
+// ls::TextureManager::UnloadTexture(id): drops one
+std::uintptr_t TextureManagerUnload();
 // the Wwise manager's SetSwitch
 std::uintptr_t WwiseSetSwitch();
 // stats functor parser

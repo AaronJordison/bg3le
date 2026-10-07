@@ -394,20 +394,23 @@ unknown icon does, and the button is drawn without its image.
 the mods' windows and before `ImGui::Render`, so the message is drawn in the
 game's own frame on every machine rather than by a desktop dialog.
 
-**`Extender/Client/IMGUI/IMGUI.cpp` — `IMGUITextureLoader::IncTextureRef`
-checks the resource bank.** `GetCurrentResourceBank()` returns null when the
-resource manager is not located, as it is not yet in bg3le, and upstream
-called through it regardless. A texture then fails to load instead of
-crashing the game.
+**`Extender/Client/IMGUI/IMGUI.cpp` — the texture loader reaches the engine
+through bg3le.** `ls::gGlobalResourceManager` stays unset, because other
+vendored code would read upstream's layouts through it. `LoadTexture` takes
+the bank lookup from `bg3le_resource_bank_get` and the engine's reference
+from `bg3le_texture_acquire` (`TextureManager::LoadTexture`, found by
+signature); `Update` drops it with `bg3le_texture_release`
+(`TextureManager::UnloadTexture`). A release still pending when the texture
+is loaded again drops its reference, where upstream leaked it.
 
 **`Extender/Client/IMGUI/IMGUI.{h,cpp}` — icon atlases register their
 resident texture.** On this build `TextureAtlas::Texture` holds the atlas
 texture's `TextureDescriptor` (a Vulkan image with one view), not a
 `TextureResource`; a live atlas reads that way field for field. `BindIcon`
-hands it to the texture loader, which registers it with the renderer
-without looking it up or loading it, and marks it resident so the engine's
-`UnloadTexture` is never called for a texture bg3le did not load. The
-upstream path is unchanged for textures that are not in an atlas.
+hands it to the texture loader, which takes an engine reference to the
+atlas's texture as upstream does, so the engine keeps it while ImGui draws
+it. Only a texture the engine does not track is registered as it is, marked
+resident so no reference is dropped for it.
 
 **`Lua/Libs/ClientUI/Builtins.inl` and `GameDefinitions/UI.h` — the Noesis
 functions go to the game's own copies.** Upstream links no Noesis library, so
@@ -469,7 +472,10 @@ takes upstream's path unchanged.
 `RegisterTexture` and `BindTexture` ask `src/vulkan_forward.cpp`, which
 tracks `vkCreateImageView` and `vkDestroyImageView`, whether a texture's view
 is live, and refuse it with an error if not. A bad view crashed NVIDIA's
-driver in `ImGui_ImplVulkan_AddTexture` when MCM opened.
+driver in `ImGui_ImplVulkan_AddTexture` when MCM opened. When a registered
+view dies anyway, `ImageReference::PrepareRender` binds the image again and
+the loader registers the texture's current view, retiring the old
+registration after `DeleteAfterFrames`.
 
 ## vendor/compat — bg3le's own code
 

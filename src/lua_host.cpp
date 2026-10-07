@@ -4544,6 +4544,21 @@ int l_prototype_names(lua_State* L) {
     return 1;
 }
 
+// Ext._Internal.PrototypeCount(kind) -> how many, without listing them
+int l_prototype_count(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)bg3le_prototype_count((int)luaL_checkinteger(L, 1)));
+    return 1;
+}
+
+extern "C" bool bg3le_prototype_test_stale(int kind, char const* name);
+
+// Ext._Internal.PrototypeTestStale(kind, name) -> whether the entry was found (a test hook)
+int l_prototype_test_stale(lua_State* L) {
+    lua_pushboolean(L, bg3le_prototype_test_stale((int)luaL_checkinteger(L, 1),
+                                                  luaL_checkstring(L, 2)));
+    return 1;
+}
+
 // Ext._Internal.TemplateFind(id) -> address, engine type name
 int l_template_find(lua_State* L) {
     char const* id = luaL_checkstring(L, 1);
@@ -8013,6 +8028,10 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "PrototypeFind");
     lua_pushcfunction(g_lua, l_prototype_names);
     lua_setfield(g_lua, -2, "PrototypeNames");
+    lua_pushcfunction(g_lua, l_prototype_count);
+    lua_setfield(g_lua, -2, "PrototypeCount");
+    lua_pushcfunction(g_lua, l_prototype_test_stale);
+    lua_setfield(g_lua, -2, "PrototypeTestStale");
     lua_pushcfunction(g_lua, l_template_find);
     lua_setfield(g_lua, -2, "TemplateFind");
     lua_pushcfunction(g_lua, l_template_ids);
@@ -15337,7 +15356,7 @@ local function cached_prototype(kind, class)
     if type(name) ~= "string" then return nil end
     -- An empty table means the search has not finished yet, which a
     -- caller cannot tell from "no such spell" if this returns nil.
-    if #Ext._Internal.PrototypeNames(PROTOTYPE_KIND[kind]) == 0 then
+    if Ext._Internal.PrototypeCount(PROTOTYPE_KIND[kind]) == 0 then
       error("bg3le: the " .. kind:lower() .. " prototype manager has not "
             .. "been found yet; it is still being searched for", 2)
     end

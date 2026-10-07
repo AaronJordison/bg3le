@@ -20,6 +20,7 @@ void hdr_record(VkCommandBuffer cmd, std::uint32_t index, ImDrawData* draw);
 // src/vulkan_forward.cpp tracks the device's image views.
 bool vk_image_view_live(VkImageView view);
 std::size_t vk_image_views_tracked();
+char const* vk_image_view_state(VkImageView view);
 }
 
 BEGIN_SE()
@@ -270,9 +271,9 @@ public:
 
         // bg3le: a handle the driver does not know crashes it on first draw.
         if (!bg3le::vk_image_view_live((VkImageView)view)) {
-            ERR("Texture %p (%ux%u) has image view %p, which is not a live view (%zu are); not drawing it",
+            ERR("Texture %p (%ux%u) has image view %p, which is not a live view (%s; %zu are live); not drawing it",
                 (void*)descriptor, descriptor->Vulkan.ImageData.Width, descriptor->Vulkan.ImageData.Height,
-                (void*)view, bg3le::vk_image_views_tracked());
+                (void*)view, bg3le::vk_image_view_state((VkImageView)view), bg3le::vk_image_views_tracked());
             return {};
         }
 
@@ -311,7 +312,8 @@ public:
         auto imageView = static_cast<VkImageView>(opaqueHandle);
         // bg3le: the view may have been destroyed since it was registered.
         if (!bg3le::vk_image_view_live(imageView)) {
-            ERR("Image view %p is no longer live; not drawing it", (void*)imageView);
+            ERR("Image view %p is no longer live (%s); not drawing it", (void*)imageView,
+                bg3le::vk_image_view_state(imageView));
             return {};
         }
         auto desc = textureDescriptors_.get_or_default(imageView, 0);
@@ -323,6 +325,11 @@ public:
         }
         
         return (ImTextureID)desc;
+    }
+
+    bool IsTextureLive(TextureOpaqueHandle opaqueHandle) override
+    {
+        return bg3le::vk_image_view_live(static_cast<VkImageView>(opaqueHandle));
     }
 
     bool IsInitialized() override
