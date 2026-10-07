@@ -26,3 +26,10 @@ since bg3le does not use the cppobject machinery for its own objects):
   label string, as bg3se's LuaCppCanonicalize makes them.
   luaH_bg3leenumlabel (declared in ltable.h) is what recognises one: a full
   userdata whose metatable holds __bg3leEnumLabel.
+
+And one for mods written on Windows:
+
+- luaconf.h, lua_pointer2str: pointers print as MSVC prints %p, sixteen
+  uppercase hex digits with no "0x" ("table: 000055D1A2B3C4E0"). glibc adds
+  "0x", which tonumber(s, 16) rejects; Trials Ascension seeds its RNG from
+  tostring({}) that way and failed to load.
