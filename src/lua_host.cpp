@@ -2144,6 +2144,28 @@ void enum_arg_in_place(lua_State* L, int index, void const* meta,
     lua_replace(L, index);
 }
 
+// A fixed array of enums assigned by labels: each element converted as a
+// field of that enum takes it, into a copy that replaces the argument.
+void enum_elements_in_place(lua_State* L, int index, void const* meta,
+                            const char* path, std::uint16_t count) {
+    index = lua_absindex(L, index);
+    const std::string element = std::string(path) + "[0]";
+    const char* label = nullptr;
+    std::uint64_t value = 0;
+    bool isBitmask = false;
+    if (!lua_istable(L, index)
+        || !bg3le_meta_enum_label(meta, element.c_str(), 0, &label, &value, &isBitmask)) {
+        return;
+    }
+    lua_createtable(L, count, 0);
+    for (int i = 1; i <= count; ++i) {
+        lua_geti(L, index, i);
+        enum_arg_in_place(L, lua_gettop(L), meta, element.c_str());
+        lua_seti(L, -2, i);
+    }
+    lua_replace(L, index);
+}
+
 // Pushes an enum-typed field as its label, or a bitmask as the list of set
 // flags -- which is how bg3se presents them, and scripts are written against
 // that. Returns false if the field is not an enum, leaving the caller to push
@@ -2444,6 +2466,9 @@ int l_set_field(lua_State* L) {
         return 1;
     }
     enum_arg_in_place(L, 4, meta, path);
+    if ((FieldKind)kind == FieldKind::ScalarArray) {
+        enum_elements_in_place(L, 4, meta, path, elemCount);
+    }
     if (!write_field(L, 4, address, (FieldKind)kind, (FieldKind)elemKind,
                      elemCount)) {
         lua_pushnil(L);
@@ -3395,6 +3420,9 @@ int l_object_set_field(lua_State* L) {
         return 1;
     }
     enum_arg_in_place(L, 4, subject.Meta, path);
+    if ((FieldKind)kind == FieldKind::ScalarArray) {
+        enum_elements_in_place(L, 4, subject.Meta, path, elemCount);
+    }
     if (!write_field(L, 4, address, (FieldKind)kind, (FieldKind)elemKind,
                      elemCount)) {
         lua_pushnil(L);
