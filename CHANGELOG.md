@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.4 (2026-10-07)
+
+- `esv::Item::CreateCacheTemplate` works, as upstream's: the item's template is cloned into the server's cache,
+  the item switched to the clone, and the switch recorded so clients follow. Trials Ascension uses it for every
+  reward, merchant and custom loot item, and failed on each one. A local template, or anything bg3le cannot verify
+  before writing, returns `nil` with a log line instead.
+- A flag of a component's flags field reads and writes as a boolean, as upstream's `P_BITMASK` makes it:
+  `ServerItem.IsLadder`, `.CanBePickedUp` and the rest. Objects already did; components raised "has no field".
+- A fixed array of enums takes labels for each element, so `Resistances.Resistances` can be assigned as lists
+  of flag names. It failed with "number expected, got table".
+
 ## v0.3.3 (2026-10-07)
 
 - `SetWorldTranslate`, `SetWorldRotate` and `SetWorldScale` work on `MoveableObject` and every render class
