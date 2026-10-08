@@ -165,3 +165,8 @@ void* noesis_root() {
 }
 
 }  // namespace bg3le
+
+// A symbol of the executable by mangled name, or null (Ext.UI's boxing).
+extern "C" void* bg3le_noesis_symbol(char const* mangled) {
+    return bg3le::resolve(mangled);
+}

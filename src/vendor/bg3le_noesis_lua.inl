@@ -126,6 +126,30 @@ T raw(void* const& val)
 
 void push_value(lua_State* L, Type const* type, void* val, Type const* objectType, Symbol const* name);
 
+// The bytes push_value reads inline (raw<T>) for a type, or 0 for one it reads
+// through the pointer.
+std::size_t inline_size(Type const* type)
+{
+    auto& classes = gStaticSymbols.TypeClasses;
+    auto& types = gStaticSymbols.Types;
+    if (type->GetClassType() == types.TypeConst.Type) {
+        return inline_size(static_cast<TypeConst const*>(type)->GetContentType());
+    }
+    if (type == types.Int8.Type || type == types.UInt8.Type || type == types.Bool.Type) return 1;
+    if (type == types.Int16.Type || type == types.UInt16.Type) return 2;
+    if (type == types.Int32.Type || type == types.UInt32.Type || type == types.Single.Type
+        || type == types.Symbol.Type) {
+        return 4;
+    }
+    if (type == types.Int64.Type || type == types.UInt64.Type || type == types.Double.Type
+        || type == types.Vector2.Type || type == types.Point.Type) {
+        return 8;
+    }
+    if (type == types.GridLength.Type) return sizeof(GridLengthHelper);
+    if (TypeHelpers::IsDescendantOf(type->GetClassType(), classes.TypeEnum.Type)) return sizeof(int);
+    return 0;
+}
+
 void push_boxed_or_object(lua_State* L, Type const* type, void* val, Type const* objectType, Symbol const* name)
 {
     auto& classes = gStaticSymbols.TypeClasses;
@@ -154,7 +178,15 @@ void push_boxed_or_object(lua_State* L, Type const* type, void* val, Type const*
 
     if (obj->GetClassType()->GetBase() == classes.BoxedValue.Type) {
         auto boxed = static_cast<BoxedValue*>(obj);
-        push_value(L, boxed->GetValueType(), const_cast<void*>(boxed->GetValuePtr()), objectType, name);
+        auto valueType = boxed->GetValueType();
+        void* at = const_cast<void*>(boxed->GetValuePtr());
+        // A box holds its value behind a pointer; push_value takes a scalar inline.
+        void* slot = nullptr;
+        if (std::size_t n = inline_size(valueType); n != 0 && n <= sizeof(slot)) {
+            std::memcpy(&slot, at, n);
+            at = slot;
+        }
+        push_value(L, valueType, at, objectType, name);
     } else {
         push_object(L, obj);
     }
@@ -411,7 +443,65 @@ std::optional<StoredValueHolder> floats_value(lua_State* L, int index, int n)
     return hold(glm::vec4(v[0], v[1], v[2], v[3]));
 }
 
-std::optional<StoredValueHolder> get_value(lua_State* L, Type const* type, int index)
+// ---- boxing ---------------------------------------------------------------
+
+extern "C" void* bg3le_noesis_symbol(char const* mangled);
+
+// A value boxed as the game boxes it: built in place, given the game's own
+// Boxed<T> vtable, and refused unless the game's GetValuePtr finds the value.
+template <class T>
+BaseComponent* box_as(T const& value, char const* vtable, char const* getValuePtr)
+{
+    static auto* vt = static_cast<char*>(bg3le_noesis_symbol(vtable));
+    static auto get = reinterpret_cast<void const* (*)(void const*)>(bg3le_noesis_symbol(getValuePtr));
+    if (vt == nullptr || get == nullptr) return nullptr;
+    auto* boxed = new Boxed<T>(value);
+    void* game = vt + 16;  // past offset-to-top and typeinfo
+    std::memcpy((void*)boxed, &game, sizeof(game));
+    if (get(boxed) != &boxed->mValue) {
+        ERR("Ext.UI: the game's %s does not match bg3le's layout; not boxing", vtable);
+        return nullptr;
+    }
+    return boxed;
+}
+
+// A string, number or boolean for a property that holds an object, as Noesis
+// boxes XAML's Tag="text"; push_stored already unboxes it on the way back.
+BaseComponent* box_lua(lua_State* L, int index)
+{
+    switch (lua_type(L, index)) {
+    case LUA_TSTRING:
+        return box_as<String>(String(lua_tostring(L, index)),
+                              "_ZTVN6Noesis5BoxedINS_11FixedStringILj24EEEEE",
+                              "_ZNK6Noesis5BoxedINS_11FixedStringILj24EEEE11GetValuePtrEv");
+    case LUA_TBOOLEAN:
+        return box_as<bool>(lua_toboolean(L, index) != 0, "_ZTVN6Noesis5BoxedIbEE",
+                            "_ZNK6Noesis5BoxedIbE11GetValuePtrEv");
+    case LUA_TNUMBER:
+        if (lua_isinteger(L, index)) {
+            const lua_Integer v = lua_tointeger(L, index);
+            if (v >= INT32_MIN && v <= INT32_MAX) {
+                return box_as<int32_t>((int32_t)v, "_ZTVN6Noesis5BoxedIiEE",
+                                       "_ZNK6Noesis5BoxedIiE11GetValuePtrEv");
+            }
+        }
+        return box_as<double>(lua_tonumber(L, index), "_ZTVN6Noesis5BoxedIdEE",
+                              "_ZNK6Noesis5BoxedIdE11GetValuePtrEv");
+    default:
+        return nullptr;
+    }
+}
+
+bool plain_value(lua_State* L, int index)
+{
+    const int lt = lua_type(L, index);
+    return lt == LUA_TSTRING || lt == LUA_TNUMBER || lt == LUA_TBOOLEAN;
+}
+
+// owned: a box made for a raw-object property, whose creation reference the
+// caller drops once the property holds it.
+std::optional<StoredValueHolder> get_value(lua_State* L, Type const* type, int index,
+                                           BaseComponent** owned = nullptr)
 {
     auto& classes = gStaticSymbols.TypeClasses;
     auto& types = gStaticSymbols.Types;
@@ -457,12 +547,33 @@ std::optional<StoredValueHolder> get_value(lua_State* L, Type const* type, int i
         return hold(*value);
     }
     if (TypeHelpers::IsDescendantOf(type, classes.BaseObject.Type)) {
+        // A plain value where any object goes (FrameworkElement.Tag) is boxed.
+        if (plain_value(L, index)
+            && TypeHelpers::IsDescendantOf(classes.BoxedValue.Type, static_cast<TypeClass const*>(type))) {
+            auto boxed = box_lua(L, index);
+            if (boxed == nullptr) {
+                luaL_error(L, "Cannot box a %s for '%s'", luaL_typename(L, index), type->GetName());
+                return {};
+            }
+            if (owned != nullptr) *owned = boxed;
+            return StoredValueHolder(static_cast<BaseObject*>(boxed));
+        }
         return StoredValueHolder(optional_object(L, index));
     }
 
     auto typeOfType = type->GetClassType();
     if (typeOfType == types.TypePtr.Type) {
         auto content = static_cast<TypePtr const*>(type)->GetStaticContentType();
+        // A plain value where any object goes (FrameworkElement.Tag) is boxed.
+        if (plain_value(L, index)
+            && TypeHelpers::IsDescendantOf(classes.BoxedValue.Type, static_cast<TypeClass const*>(content))) {
+            auto boxed = box_lua(L, index);
+            if (boxed == nullptr) {
+                luaL_error(L, "Cannot box a %s for '%s'", luaL_typename(L, index), type->GetName());
+                return {};
+            }
+            return StoredValueHolder(static_cast<BaseObject*>(boxed));
+        }
         auto obj = static_cast<BaseComponent*>(object_arg(L, index));
         if (!TypeHelpers::IsDescendantOf(obj->GetClassType(), static_cast<TypeClass const*>(content))) {
             luaL_error(L, "Expected object of type '%s', got '%s'", type->GetName(), obj->GetClassType()->GetName());
@@ -745,19 +856,23 @@ int l_set(lua_State* L)
             return luaL_error(L, "Property %s of %s is read-only", prop->Property->GetName().Str(),
                               o->GetClassType()->GetName());
         }
-        auto val = get_value(L, prop->Property->GetContentType(), 3);
+        BaseComponent* owned = nullptr;
+        auto val = get_value(L, prop->Property->GetContentType(), 3, &owned);
         if (val) prop->Property->Set(o, val->IsIntegral ? &val->Value : val->Value);
+        if (owned != nullptr) owned->Release();
         lua_pushboolean(L, 1);
         return 1;
     }
     if (prop != nullptr && prop->DepProperty != nullptr) {
         auto dp = prop->DepProperty;
-        auto val = get_value(L, dp->GetType(), 3);
+        BaseComponent* owned = nullptr;
+        auto val = get_value(L, dp->GetType(), 3, &owned);
         if (val) {
             dp->GetValueManager()->SetValue(static_cast<DependencyObject*>(o), dp,
                 val->IsIntegral ? &val->Value : val->Value, 0, nullptr, nullptr,
                 Value::Destination_BaseValue);
         }
+        if (owned != nullptr) owned->Release();
         lua_pushboolean(L, 1);
         return 1;
     }
