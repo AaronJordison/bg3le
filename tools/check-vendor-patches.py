@@ -163,10 +163,6 @@ CHECKS = [
     ("the Vulkan overlay draws only live image views, and images re-bind dead ones",
      lambda: text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl").count("bg3le::vk_image_view_live(") == 3
              and "!gExtender->IMGUI().IsTextureLive(TextureHandle)" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")),
-    ("the Vulkan overlay keeps one pool and sampler per device and locks binds",
-     lambda: "if (descriptorPool_ == VK_NULL_HANDLE) {" in text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl")
-             and "if (sampler_ == VK_NULL_HANDLE) {" in text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl")
-             and "ImGui_ImplVulkan_AddTexture cannot run on a shut-down backend" in text("BG3Extender/Extender/Client/IMGUI/Vulkan.inl")),
     ("icon atlases register their resident texture",
      lambda: "reinterpret_cast<TextureDescriptor*>(atlas->Texture)" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")
              and "bool Resident{ false };" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.h")),

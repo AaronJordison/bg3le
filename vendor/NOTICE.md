@@ -477,17 +477,6 @@ view dies anyway, `ImageReference::PrepareRender` binds the image again and
 the loader registers the texture's current view, retiring the old
 registration after `DeleteAfterFrames`.
 
-**`Extender/Client/IMGUI/Vulkan.inl` — one descriptor pool and sampler per
-device, and binds locked.** Upstream's `InitializeUI` made a new pool and
-sampler each time the overlay was rebuilt, which is every swapchain
-recreation, and freed them only with the device: one of each leaked per
-window resize. They are made once and reused, so cached texture descriptors
-stay valid too, and the device teardown destroys them before clearing
-`device_` rather than after. `BindTexture` and `UnregisterTexture` take
-`globalResourceLock_` and check `initialized_` as their siblings do, so
-neither reaches the ImGui backend while `DestroyUI` shuts it down (bg3se
-issue #597).
-
 ## vendor/compat — bg3le's own code
 
 Shims that let the upstream sources compile unmodified. They are force-included
