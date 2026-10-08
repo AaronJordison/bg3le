@@ -127,7 +127,10 @@ public:
             .poolSizeCount = 1,
             .pPoolSizes = &poolSize
         };
-        VK_CHECK(vkCreateDescriptorPool(device_, &createInfo, nullptr, &descriptorPool_));
+        // bg3le: one pool and sampler per device; each rebuild after a resize made new ones and leaked the old.
+        if (descriptorPool_ == VK_NULL_HANDLE) {
+            VK_CHECK(vkCreateDescriptorPool(device_, &createInfo, nullptr, &descriptorPool_));
+        }
 
         VkSamplerCreateInfo samplerInfo
         {
@@ -140,7 +143,9 @@ public:
             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
             .maxLod = VK_LOD_CLAMP_NONE,
         };
-        VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler_));
+        if (sampler_ == VK_NULL_HANDLE) {
+            VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler_));
+        }
 
         IMGUI_DEBUG("VK initialization: desc pool %p, sampler %p", descriptorPool_, sampler_);
 
@@ -296,6 +301,9 @@ public:
     void UnregisterTexture(TextureOpaqueHandle opaqueHandle) override
     {
         if (!initialized_) return;
+        // bg3le: as NewFrame, so this cannot reach a backend DestroyUI is shutting down.
+        std::lock_guard _(globalResourceLock_);
+        if (!initialized_) return;
 
         auto imageView = static_cast<VkImageView>(opaqueHandle);
         auto desc = textureDescriptors_.get_or_default(imageView, 0);
@@ -309,6 +317,11 @@ public:
 
     std::optional<ImTextureID> BindTexture(TextureOpaqueHandle opaqueHandle) override
     {
+        // bg3le: as NewFrame, so ImGui_ImplVulkan_AddTexture cannot run on a shut-down backend.
+        if (!initialized_) return {};
+        std::lock_guard _(globalResourceLock_);
+        if (!initialized_) return {};
+
         auto imageView = static_cast<VkImageView>(opaqueHandle);
         // bg3le: the view may have been destroyed since it was registered.
         if (!bg3le::vk_image_view_live(imageView)) {
@@ -496,11 +509,7 @@ private:
         DestroyUI();
         releaseSwapChain(swapchain_);
 
-        physicalDevice_ = VK_NULL_HANDLE;
-        device_ = VK_NULL_HANDLE;
-        queueFamily_ = 0;
-        renderQueue_ = VK_NULL_HANDLE;
-
+        // bg3le: destroyed while device_ is still the device, not after it is cleared.
         if (descriptorPool_ != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
             descriptorPool_ = VK_NULL_HANDLE;
@@ -511,6 +520,11 @@ private:
             vkDestroySampler(device_, sampler_, nullptr);
             sampler_ = VK_NULL_HANDLE;
         }
+
+        physicalDevice_ = VK_NULL_HANDLE;
+        device_ = VK_NULL_HANDLE;
+        queueFamily_ = 0;
+        renderQueue_ = VK_NULL_HANDLE;
     }
 
     void vkCreatePipelineCacheHooked(
