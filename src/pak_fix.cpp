@@ -731,10 +731,21 @@ namespace {
 
 thread_local bool t_bypass = false;
 std::mutex g_lock;
-std::map<std::string, std::string> g_redirects;
+// Function-local statics, not namespace-scope objects: another TU's constructor (the
+// stats mirror's, inside preload) reads paks through the interposed open() BEFORE
+// this TU's dynamic init runs, and a namespace-scope map reached then is unconstructed
+// — a null __tree deref, every launch. The 57a617a rule: constructors may not touch
+// another TU's namespace-scope object.
+std::map<std::string, std::string>& g_redirects() {
+    static std::map<std::string, std::string> redirects;
+    return redirects;
+}
 // "<Mods>/<name>_1.pak", which no one has on disk, to "<Mods>/<name>.pak":
 // part 1 of a split copy is the original.
-std::map<std::string, std::string> g_parts;
+std::map<std::string, std::string>& g_parts() {
+    static std::map<std::string, std::string> parts;
+    return parts;
+}
 
 // "<profile>/Mods/<name>.pak", where the profile is "Baldur's Gate 3".
 bool mod_archive(std::string_view path) {
@@ -918,10 +929,12 @@ void sweep(std::string const& mods) {
 }
 
 std::string redirect_locked(std::string const& path) {
-    auto part = g_parts.find(path);
-    if (part != g_parts.end()) return part->second;
-    auto it = g_redirects.find(path);
-    if (it != g_redirects.end()) return it->second;
+    auto& parts = g_parts();
+    auto& redirects = g_redirects();
+    auto part = parts.find(path);
+    if (part != parts.end()) return part->second;
+    auto it = redirects.find(path);
+    if (it != redirects.end()) return it->second;
 
     static bool swept = false;
     if (!swept) {
@@ -934,15 +947,15 @@ std::string redirect_locked(std::string const& path) {
     if (!archive.empty() && ::access(path.c_str(), F_OK) != 0
         && ::access(archive.c_str(), F_OK) == 0) {
         redirect_locked(archive);
-        part = g_parts.find(path);
-        std::string const original = part != g_parts.end() ? part->second : std::string();
-        g_redirects.emplace(path, original);
+        part = parts.find(path);
+        std::string const original = part != parts.end() ? part->second : std::string();
+        redirects.emplace(path, original);
         return original;
     }
 
     std::string copy = prepare(path);
-    if (!copy.empty() && is_split(copy)) g_parts.emplace(part_path(path, 1), path);
-    g_redirects.emplace(path, copy);
+    if (!copy.empty() && is_split(copy)) parts.emplace(part_path(path, 1), path);
+    redirects.emplace(path, copy);
     return copy;
 }
 
