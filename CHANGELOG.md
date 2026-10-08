@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.3.4 (2026-10-07)
+
+- `esv::Item::CreateCacheTemplate` works, as upstream's: the item's template is cloned into the server's cache,
+  the item switched to the clone, and the switch recorded so clients follow. Trials Ascension uses it for every
+  reward, merchant and custom loot item, and failed on each one. A local template, or anything bg3le cannot verify
+  before writing, returns `nil` with a log line instead.
+- A flag of a component's flags field reads and writes as a boolean, as upstream's `P_BITMASK` makes it:
+  `ServerItem.IsLadder`, `.CanBePickedUp` and the rest. Objects already did; components raised "has no field".
+- A fixed array of enums takes labels for each element, so `Resistances.Resistances` can be assigned as lists
+  of flag names. It failed with "number expected, got table".
+
+## v0.3.3 (2026-10-07)
+
+- `SetWorldTranslate`, `SetWorldRotate` and `SetWorldScale` work on `MoveableObject` and every render class
+  upstream derives from it (`Visual`, `Effect`, `LightComponent` and the rest).
+- Assigning a table to a map entry whose value is a struct replaces it with a value filled from the table, as
+  upstream does, instead of failing. Applies to component and object maps.
+- `Ext.IMGUI.NewWindow` and `Ext.IMGUI.LoadFont` take a number as the name, using its text, as upstream does.
+- Osiris calls accept an empty string argument. They were refused as "could not be interned".
+
+## v0.3.2 (2026-10-07)
+
+- `StatsLoaded` now fires where upstream fires it: in the client, from the engine's stats load at startup, after the
+  client's mods load into a fresh Lua state. It used to fire in both contexts as each session started, after
+  character creation was already built. Compatibility Framework's subclasses now appear in character creation (14
+  Cleric subclasses instead of 8), shared `StatsLoaded` handlers no longer run twice, and starting a session is
+  faster: bg3le's mod loading there went from 4.75 s to about 1 s with 5eSpells, Expansion and UAWarCaster.
+- `Ext.Stats.Sync` during `StatsLoaded` no longer warns that a prototype manager is not located: the engine builds
+  every prototype from the stats right after, as upstream relies on.
+- The stats are found again after every module load, and a search that failed during the load no longer hides them
+  from `StatsLoaded` for ten seconds.
+- ImGui widgets are userdata, as upstream's are; mods tell a widget from a list of widgets by `type()`. Fixes
+  Trials Ascension's GUI errors.
+- Pointers print as MSVC's `%p` does (16 uppercase hex digits, no `0x`). Trials Ascension seeds its random numbers
+  from one, and its scripts failed to load.
+
 ## v0.3.1 (2026-10-07)
 
 - Fixed a crash loading any save when a mod writes a stat condition before the load, at the main menu. A condition

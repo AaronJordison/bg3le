@@ -478,10 +478,14 @@ char const* sync_passive(Object* object, char const* name) {
 // Rebuilds the prototype of the named stat. Returns nullptr on success, or
 // when the stat has no prototype to rebuild (upstream does nothing there
 // either); otherwise why it could not.
+extern "C" bool bg3le_stats_is_loading();
+
 extern "C" char const* bg3le_stats_sync(char const* name) {
     using namespace bg3le;
     auto* object = (bg3se::stats::Object*)bg3le_stats_find(name);
     if (object == nullptr) return "no such stat";
+    // The engine builds every prototype from the stats once RPGStats::Load returns.
+    if (bg3le_stats_is_loading()) return nullptr;
     char const* type = bg3le_stats_type(object);
     if (type == nullptr) return nullptr;
 

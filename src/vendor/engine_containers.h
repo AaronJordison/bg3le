@@ -179,4 +179,95 @@ bool fs_map_insert(void* at, std::uint32_t key, V const& value, void** slotOut =
     return true;
 }
 
+// A map whose keys hash to themselves (an integer, a handle), as bg3se's
+// Hash(uint32_t) and Hash(EntityHandle). Where key's value is, or null.
+template <class K, class V>
+V* int_map_find(void* at, K key) {
+    RawMap m{};
+    if (!safe_read(at, &m, sizeof(m)) || m.KeysSize > (1u << 22) || m.Buckets == 0) return nullptr;
+    std::int32_t cur = -1;
+    if (!safe_read(m.HashKeys + (std::uint64_t)key % m.Buckets, &cur, 4)) return nullptr;
+    for (std::uint32_t step = 0; cur >= 0 && (std::uint32_t)cur < m.KeysSize && step <= m.KeysSize; ++step) {
+        K k{};
+        if (!safe_read((K const*)m.Keys + cur, &k, sizeof(K))) return nullptr;
+        if (k == key) return (V*)((char*)m.Values + (std::size_t)cur * sizeof(V));
+        if (!safe_read(m.NextIds + cur, &cur, 4)) return nullptr;
+    }
+    return nullptr;
+}
+
+// Inserts key -> value into such a map, or overwrites it; as fs_map_insert,
+// in place while there is room and rebuilt into fresh buffers otherwise.
+template <class K, class V>
+bool int_map_insert(void* at, K key, V const& value) {
+    RawMap m{};
+    if (!safe_read(at, &m, sizeof(m)) || !bg3le_game_allocator_ready()) return false;
+    const std::uint32_t n = m.KeysSize;
+    if (n > (1u << 22) || m.NextSize != n || (m.ValuesSize != n && m.ValuesSize != 0)
+        || (n > 0 && m.Buckets == 0)) {
+        return false;
+    }
+    if (V* slot = int_map_find<K, V>(at, key)) {
+        std::memcpy((void*)slot, &value, sizeof(V));
+        return true;
+    }
+
+    std::vector<K> keys(n);
+    std::vector<std::int32_t> heads(m.Buckets);
+    if ((n > 0 && !safe_read(m.Keys, keys.data(), n * sizeof(K)))
+        || (m.Buckets > 0 && !safe_read(m.HashKeys, heads.data(), m.Buckets * 4))) {
+        return false;
+    }
+    // Refuse a map whose keys are not where their own value puts them.
+    const std::uint32_t stride = n > 64 ? n / 64 : 1;
+    for (std::uint32_t i = 0; i < n; i += stride) {
+        if (int_map_find<K, V>(at, keys[i]) == nullptr) return false;
+    }
+
+    if (n > 0 && n < m.KeysCapacity && n < m.NextCapacity && n < m.ValuesCapacity) {
+        const std::uint32_t bucket = (std::uint32_t)((std::uint64_t)key % m.Buckets);
+        std::int32_t prev = heads[bucket];
+        if (prev < 0) prev = -2 - (std::int32_t)bucket;
+        std::memcpy((char*)m.Values + (std::size_t)n * sizeof(V), &value, sizeof(V));
+        ((K*)m.Keys)[n] = key;
+        m.NextIds[n] = prev;
+        m.HashKeys[bucket] = (std::int32_t)n;
+        const std::uint32_t total = n + 1;
+        std::memcpy((char*)at + offsetof(RawMap, NextSize), &total, 4);
+        if (m.ValuesSize != 0) std::memcpy((char*)at + offsetof(RawMap, ValuesSize), &total, 4);
+        std::memcpy((char*)at + offsetof(RawMap, KeysSize), &total, 4);
+        return true;
+    }
+
+    std::vector<unsigned char> values((std::size_t)n * sizeof(V));
+    if (n > 0 && !safe_read(m.Values, values.data(), values.size())) return false;
+    const std::uint32_t total = n + 1;
+    const std::uint32_t buckets = bg3se::GetNearestSmallMultiHashMapPrime(total + 2);
+    auto* keysBuf = (K*)bg3se::GameAllocRaw(sizeof(K) * total);
+    auto* nextBuf = (std::int32_t*)bg3se::GameAllocRaw(4 * total);
+    auto* hashBuf = (std::int32_t*)bg3se::GameAllocRaw(4 * buckets);
+    auto* valueBuf = (unsigned char*)bg3se::GameAllocRaw(sizeof(V) * total);
+    if (!keysBuf || !nextBuf || !hashBuf || !valueBuf) return false;
+
+    std::memcpy(keysBuf, keys.data(), sizeof(K) * (std::size_t)n);
+    keysBuf[n] = key;
+    std::memcpy(valueBuf, values.data(), values.size());
+    std::memcpy(valueBuf + values.size(), &value, sizeof(V));
+    for (std::uint32_t b = 0; b < buckets; ++b) hashBuf[b] = -1;
+    for (std::uint32_t i = 0; i < total; ++i) {
+        const std::uint32_t bucket = (std::uint32_t)((std::uint64_t)keysBuf[i] % buckets);
+        std::int32_t prev = hashBuf[bucket];
+        if (prev < 0) prev = -2 - (std::int32_t)bucket;
+        nextBuf[i] = prev;
+        hashBuf[bucket] = (std::int32_t)i;
+    }
+
+    const std::uint32_t zero = 0;
+    std::memcpy((char*)at + offsetof(RawMap, KeysSize), &zero, 4);
+    RawMap grown{hashBuf, buckets, m.HashKeysSize, nextBuf, total, total,
+                 (std::uint32_t*)keysBuf, total, total, valueBuf, total, m.ValuesSize == 0 ? 0 : total};
+    std::memcpy(at, &grown, sizeof(grown));
+    return true;
+}
+
 }  // namespace bg3le

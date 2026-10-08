@@ -1098,6 +1098,42 @@ int l_peek(lua_State* L) {
     return 1;
 }
 
+// Ext._Internal.MoveableSet(address, what, {x, y, z[, w]}) -> true; what is
+// 0 translate, 1 rotate, 2 scale (src/vendor/moveable.cpp).
+extern "C" bool bg3le_moveable_set(void* object, int what, float const* v);
+int l_moveable_set(lua_State* L) {
+    auto* object = reinterpret_cast<void*>(static_cast<std::uintptr_t>(luaL_checkinteger(L, 1)));
+    const int what = static_cast<int>(luaL_checkinteger(L, 2));
+    luaL_checktype(L, 3, LUA_TTABLE);
+    float v[4] = {0, 0, 0, 1};
+    const int n = what == 1 ? 4 : 3;
+    for (int i = 0; i < n; ++i) {
+        lua_geti(L, 3, i + 1);
+        v[i] = static_cast<float>(luaL_checknumber(L, -1));
+        lua_pop(L, 1);
+    }
+    lua_pushboolean(L, bg3le_moveable_set(object, what, v) ? 1 : 0);
+    return 1;
+}
+
+// Ext._Internal.ItemCreateCacheTemplate(handle, component) -> the item's cache
+// template's address, or nil (src/vendor/cache_template.cpp).
+extern "C" void* bg3le_item_create_cache_template(void* container, void* item,
+                                                  std::uint64_t entity);
+void* component_pointer(std::uint64_t handle, const char* name, void const** meta);
+void* server_container();
+int l_item_create_cache_template(lua_State* L) {
+    const auto handle = static_cast<std::uint64_t>(luaL_checkinteger(L, 1));
+    const char* name = luaL_checkstring(L, 2);
+    void const* meta = nullptr;
+    void* item = component_pointer(handle, name, &meta);
+    void* tmpl = item != nullptr
+        ? bg3le_item_create_cache_template(server_container(), item, handle) : nullptr;
+    if (tmpl == nullptr) return 0;
+    lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<std::uintptr_t>(tmpl)));
+    return 1;
+}
+
 int l_peek_string(lua_State* L) {
     const auto addr = static_cast<std::uintptr_t>(luaL_checkinteger(L, 1));
     char buf[512];
@@ -2126,6 +2162,28 @@ void enum_arg_in_place(lua_State* L, int index, void const* meta,
     lua_replace(L, index);
 }
 
+// A fixed array of enums assigned by labels: each element converted as a
+// field of that enum takes it, into a copy that replaces the argument.
+void enum_elements_in_place(lua_State* L, int index, void const* meta,
+                            const char* path, std::uint16_t count) {
+    index = lua_absindex(L, index);
+    const std::string element = std::string(path) + "[0]";
+    const char* label = nullptr;
+    std::uint64_t value = 0;
+    bool isBitmask = false;
+    if (!lua_istable(L, index)
+        || !bg3le_meta_enum_label(meta, element.c_str(), 0, &label, &value, &isBitmask)) {
+        return;
+    }
+    lua_createtable(L, count, 0);
+    for (int i = 1; i <= count; ++i) {
+        lua_geti(L, index, i);
+        enum_arg_in_place(L, lua_gettop(L), meta, element.c_str());
+        lua_seti(L, -2, i);
+    }
+    lua_replace(L, index);
+}
+
 // Pushes an enum-typed field as its label, or a bitmask as the list of set
 // flags -- which is how bg3se presents them, and scripts are written against
 // that. Returns false if the field is not an enum, leaving the caller to push
@@ -2270,6 +2328,14 @@ int l_get_field(lua_State* L) {
     bool readOnly = false;
     if (!bg3le_meta_resolve(meta, path, component, &address, &kind, &size,
                             &readOnly)) {
+        // P_BITMASK: a flag of a flags field reads as a boolean.
+        std::uint64_t mask = 0;
+        std::uint64_t raw = 0;
+        if (bg3le_meta_bitflag(meta, path, component, &address, &size, &mask)
+            && size <= 8 && safe_read(address, &raw, size)) {
+            lua_pushboolean(L, (raw & mask) == mask ? 1 : 0);
+            return 1;
+        }
         lua_pushnil(L);
         lua_pushfstring(L, "%s.%s does not resolve", name, path);
         return 2;
@@ -2372,6 +2438,16 @@ int l_set_field(lua_State* L) {
     bool readOnly = false;
     if (!bg3le_meta_resolve(meta, path, component, &address, &kind, &size,
                             &readOnly)) {
+        // P_BITMASK: assigning a flag sets or clears its bit.
+        std::uint64_t mask = 0;
+        std::uint64_t raw = 0;
+        if (bg3le_meta_bitflag(meta, path, component, &address, &size, &mask)
+            && size <= 8 && safe_read(address, &raw, size)) {
+            raw = lua_toboolean(L, 4) ? (raw | mask) : (raw & ~mask);
+            std::memcpy(address, &raw, size);
+            lua_pushboolean(L, 1);
+            return 1;
+        }
         lua_pushnil(L);
         lua_pushfstring(L, "%s.%s does not resolve", name, path);
         return 2;
@@ -2408,6 +2484,9 @@ int l_set_field(lua_State* L) {
         return 1;
     }
     enum_arg_in_place(L, 4, meta, path);
+    if ((FieldKind)kind == FieldKind::ScalarArray) {
+        enum_elements_in_place(L, 4, meta, path, elemCount);
+    }
     if (!write_field(L, 4, address, (FieldKind)kind, (FieldKind)elemKind,
                      elemCount)) {
         lua_pushnil(L);
@@ -3359,6 +3438,9 @@ int l_object_set_field(lua_State* L) {
         return 1;
     }
     enum_arg_in_place(L, 4, subject.Meta, path);
+    if ((FieldKind)kind == FieldKind::ScalarArray) {
+        enum_elements_in_place(L, 4, subject.Meta, path, elemCount);
+    }
     if (!write_field(L, 4, address, (FieldKind)kind, (FieldKind)elemKind,
                      elemCount)) {
         lua_pushnil(L);
@@ -3919,8 +4001,27 @@ void read_imgui_args(lua_State* L, int first, ImguiArg* out,
             arg.Text = lua_tostring(L, at);
             break;
 
+        case LUA_TUSERDATA: {
+            // A widget (userdata, as upstream's) answers Handle through __index;
+            // other bg3le objects (entities) answer it too, so check the type.
+            bool widget = false;
+            if (lua_getmetatable(L, at)) {
+                lua_getfield(L, -1, "__name");
+                char const* name = lua_tostring(L, -1);
+                widget = name != nullptr && std::strcmp(name, "ImguiHandle") == 0;
+                lua_pop(L, 2);
+            }
+            if (widget) {
+                lua_getfield(L, at, "Handle");
+                arg.Kind = kImguiArgHandle;
+                arg.Handle = (std::uint64_t)lua_tointeger(L, -1);
+                lua_pop(L, 1);
+            }
+            break;
+        }
+
         case LUA_TTABLE: {
-            // A widget, if it carries a handle; a vector otherwise.
+            // A vector; or a widget table, if it carries a handle.
             lua_getfield(L, at, "Handle");
             if (lua_isinteger(L, -1)) {
                 arg.Kind = kImguiArgHandle;
@@ -5180,6 +5281,7 @@ int l_stats_count(lua_State* L) {
 
 // Ext._Internal.StatsTakeLoaded() -> whether StatsLoaded is owed
 extern "C" bool bg3le_stats_take_loaded(bool client);
+extern "C" void bg3le_stats_module_loaded();
 int l_stats_take_loaded(lua_State* L) {
     lua_pushboolean(L, bg3le_stats_take_loaded(in_client_state()) ? 1 : 0);
     return 1;
@@ -7765,6 +7867,10 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "Peek");
     lua_pushcfunction(g_lua, l_peek_string);
     lua_setfield(g_lua, -2, "PeekString");
+    lua_pushcfunction(g_lua, l_moveable_set);
+    lua_setfield(g_lua, -2, "MoveableSet");
+    lua_pushcfunction(g_lua, l_item_create_cache_template);
+    lua_setfield(g_lua, -2, "ItemCreateCacheTemplate");
     lua_pushcfunction(g_lua, l_list_dir);
     lua_setfield(g_lua, -2, "ListDir");
     lua_pushcfunction(g_lua, l_extender_root);
@@ -9284,12 +9390,17 @@ local imgui_userdata = {}
 -- same table each time and `self` behaves. Weak-valued, so a widget the mod
 -- has dropped does not keep its table alive.
 local imgui_widgets = setmetatable({}, {__mode = "v"})
+-- Each widget's Handle and Callbacks. Widgets are userdata, as upstream's are
+-- (mods tell one widget from a list of them by type()), so nothing lives on
+-- the widget itself.
+-- (On the metatable rather than a local: the prelude is at Lua's local limit.)
+imgui_widget.__bg3leState = setmetatable({}, {__mode = "k"})
 
 local imgui_methods = {}
 
 function imgui_methods:Destroy()
-  local handle = rawget(self, "Handle")
-  for _, id in pairs(rawget(self, "Callbacks") or {}) do
+  local handle = imgui_widget.__bg3leState[self].Handle
+  for _, id in pairs(imgui_widget.__bg3leState[self].Callbacks or {}) do
     imgui_callbacks[id] = nil
   end
   imgui_widgets[handle] = nil
@@ -9301,7 +9412,8 @@ imgui_widget.__index = function(self, key)
   local method = imgui_methods[key]
   if method ~= nil then return method end
 
-  local handle = rawget(self, "Handle")
+  local handle = imgui_widget.__bg3leState[self].Handle
+  if key == "Handle" then return handle end
   if key == "UserData" then return imgui_userdata[handle] end
 
   -- An Add* call: make the child and hand back a widget for it.
@@ -9318,7 +9430,7 @@ imgui_widget.__index = function(self, key)
 
   -- An event reads back as the function that was set, which is what
   -- upstream's delegate does.
-  local registered = rawget(self, "Callbacks")
+  local registered = imgui_widget.__bg3leState[self].Callbacks
   if registered ~= nil and registered[key] ~= nil then
     return imgui_callbacks[registered[key]]
   end
@@ -9383,7 +9495,7 @@ imgui_widget.__index = function(self, key)
 end
 
 imgui_widget.__newindex = function(self, key, value)
-  local handle = rawget(self, "Handle")
+  local handle = imgui_widget.__bg3leState[self].Handle
   if key == "UserData" then
     imgui_userdata[handle] = value
     return
@@ -9391,11 +9503,11 @@ imgui_widget.__newindex = function(self, key, value)
 
   -- A function can only be an event handler: no other property of a widget
   -- takes one, and the C side refuses a name that is not a delegate.
-  local registered = rawget(self, "Callbacks")
+  local registered = imgui_widget.__bg3leState[self].Callbacks
   if type(value) == "function" or registered ~= nil and registered[key] then
     if registered == nil then
       registered = {}
-      rawset(self, "Callbacks", registered)
+      imgui_widget.__bg3leState[self].Callbacks = registered
     end
 
     local was = registered[key]
@@ -9452,12 +9564,15 @@ make_widget = function(handle)
   local existing = imgui_widgets[handle]
   if existing ~= nil then return existing end
 
-  local widget = setmetatable({Handle = handle}, imgui_widget)
+  local widget = Ext._Internal.NewObjectProxy(imgui_widget)
+  imgui_widget.__bg3leState[widget] = {Handle = handle}
   imgui_widgets[handle] = widget
   return widget
 end
 
 function Ext.IMGUI.NewWindow(name)
+  -- A number is its text, as upstream's luaL_checkstring takes it.
+  if type(name) == "number" then name = tostring(name) end
   if type(name) ~= "string" then
     error("Ext.IMGUI.NewWindow(name) takes a name", 2)
   end
@@ -9518,6 +9633,8 @@ end
 -- A path relative to the game's data, or empty for the default the language
 -- picks.
 function Ext.IMGUI.LoadFont(name, path, size)
+  -- A number is its text, as upstream's luaL_checkstring takes it.
+  if type(name) == "number" then name = tostring(name) end
   if type(name) ~= "string" then
     error("Ext.IMGUI.LoadFont(name, path, size) takes a name", 2)
   end
@@ -9953,6 +10070,60 @@ builtin_members["esv::Character"] = {
   Character = {Get = self_alias("ServerCharacter.Character")},
 }
 builtin_members["esv::Item"] = {Item = {Get = self_alias("ServerItem.Item")}}
+
+-- esv::Item::CreateCacheTemplate: the item's template cloned into the server's
+-- cache and the item switched to it (src/vendor/cache_template.cpp).
+do
+  local function item_create_cache_template(self)
+    local meta = Ext._Internal.RawGetMetatable(self)
+    local id = type(meta) == "table" and meta.__bg3leIdentity or nil
+    if type(id) == "function" then id = id(self) end
+    -- A component view's identity is "c:<handle>:<component>:<prefix>".
+    local handle, comp = nil, nil
+    if type(id) == "string" then
+      local h, c = id:match("^c:(%-?%d+):(.*):$")
+      handle, comp = tonumber(h), c
+    end
+    if handle == nil or not Ext.IsServer() then
+      error("bg3le: CreateCacheTemplate needs the server's ServerItem component", 2)
+    end
+    local address = Ext._Internal.ItemCreateCacheTemplate(handle, comp)
+    if address == nil then return nil end
+    return Ext._Internal.TemplateAt(address, "item")
+  end
+  builtin_members["esv::Item"].CreateCacheTemplate = {Fn = item_create_cache_template}
+end
+
+-- MoveableObject's SetWorldTranslate, SetWorldRotate and SetWorldScale, on it
+-- and every class upstream's property maps derive from it.
+do
+  local function moveable_setter(what, name)
+    return function(self, value)
+      -- The object's address: "p:<hex>" on a pointed-to object, "o:<decimal>:" on a view.
+      local meta = Ext._Internal.RawGetMetatable(self)
+      local id = type(meta) == "table" and meta.__bg3leIdentity or nil
+      if type(id) == "function" then id = id(self) end
+      local addr = nil
+      if type(id) == "string" then
+        local hex = id:match("^p:(%x+)$")
+        addr = hex and tonumber(hex, 16) or tonumber(id:match("^o:(%-?%d+):$"))
+      end
+      if addr == nil or not Ext._Internal.MoveableSet(addr, what, value) then
+        error("bg3le: " .. name .. " could not reach this object's engine method", 2)
+      end
+    end
+  end
+  local methods = {
+    SetWorldTranslate = {Fn = moveable_setter(0, "SetWorldTranslate")},
+    SetWorldRotate = {Fn = moveable_setter(1, "SetWorldRotate")},
+    SetWorldScale = {Fn = moveable_setter(2, "SetWorldScale")},
+  }
+  for _, class in ipairs({"MoveableObject", "Visual", "Effect", "RenderableObject", "AnimatableObject",
+                          "Shape", "DecalObject", "CullableInstance", "InstancingRenderableObject",
+                          "InstancingObject", "LightComponent"}) do
+    builtin_members[class] = methods
+  end
+end
 
 -- Published so the views can reach it; the prelude is compiled in more than
 -- one chunk, so a local here is not in scope there.
@@ -12439,7 +12610,9 @@ make_map = function(handle, comp, path)
       if i == nil then return nil end
       return value_at(i)
     end,
-    -- As upstream's map proxy: a new key is added, and nil removes one.
+    -- As upstream's map proxy: a new key is added, and nil removes one. A
+    -- table for a struct value is a default value filled from it, replacing
+    -- any existing one, as upstream's get<TValue> and insert make it.
     __newindex = function(_, key, value)
       local i = slot_of(key)
       if value == nil then
@@ -12449,11 +12622,20 @@ make_map = function(handle, comp, path)
         end
         return
       end
+      local struct = type(value) == "table"
+        and Ext._Internal.FieldInfo(comp, path .. "[0]") == "struct"
+      if struct and i ~= nil and Ext._Internal.MapEdit(handle, comp, path, key, false) then
+        i = nil
+      end
       if i == nil then
         local ok, err = Ext._Internal.MapEdit(handle, comp, path, key, true)
         if not ok then error("bg3le: " .. tostring(err), 0) end
         i = slot_of(key)
         if i == nil then error("bg3le: " .. comp .. "." .. path .. " did not take the key", 0) end
+      end
+      if struct then
+        Ext.Types.Unserialize(value_at(i), value)
+        return
       end
       local ok, err = Ext._Internal.SetField(
         handle, comp, path .. "[" .. i .. "]", value)
@@ -12542,6 +12724,12 @@ make_fields = function(handle, comp, prefix, fields, identity)
         if extra ~= nil then
           if extra.Fn ~= nil then return extra.Fn end
           return extra.Get(self)
+        end
+
+        -- P_BITMASK: one flag of a flags field, as a boolean.
+        if type(key) == "string" then
+          local flag = Ext._Internal.GetField(handle, comp, path_to(key))
+          if type(flag) == "boolean" then return flag end
         end
 
         local where = prefix == "" and comp or (comp .. "." .. prefix)
@@ -14119,7 +14307,8 @@ local function read_object_path(addr, class, path, kind)
     end
     scan()
     -- As a component's map, and upstream's map proxy: an existing key's value
-    -- writes through, a new key is added, and nil removes one.
+    -- writes through, a new key is added, nil removes one, and a table for a
+    -- struct value replaces it with a default value filled from the table.
     local function write(k, v)
       local i = slots[k]
       if v == nil then
@@ -14130,6 +14319,12 @@ local function read_object_path(addr, class, path, kind)
         end
         return
       end
+      local struct = type(v) == "table"
+        and Ext._Internal.ObjectFieldInfo(class, path .. "[0]") == "struct"
+      if struct and i ~= nil and Ext._Internal.ObjectMapEdit(addr, class, path, k, false) then
+        scan()
+        i = nil
+      end
       if i == nil then
         local ok, err = Ext._Internal.ObjectMapEdit(addr, class, path, k, true)
         if not ok then error("bg3le: " .. tostring(err), 0) end
@@ -14138,8 +14333,12 @@ local function read_object_path(addr, class, path, kind)
         if i == nil then error("bg3le: " .. class .. "." .. path .. " did not take the key", 0) end
       end
       local element = path .. "[" .. i .. "]"
-      local ok, err = Ext._Internal.ObjectSetField(addr, class, element, v)
-      if not ok then error("bg3le: " .. tostring(err), 0) end
+      if struct then
+        Ext.Types.Unserialize(read_object_path(addr, class, element, "struct"), v)
+      else
+        local ok, err = Ext._Internal.ObjectSetField(addr, class, element, v)
+        if not ok then error("bg3le: " .. tostring(err), 0) end
+      end
       items[k] = read_object_path(addr, class, element,
                                   Ext._Internal.ObjectFieldInfo(class, element))
     end
@@ -15032,14 +15231,11 @@ function Ext._Internal.LoadModScripts()
 end
 
 -- A session coming up, in two halves so that both contexts finish the first
--- before either starts the second (lua_load_mods): upstream fires StatsLoaded
--- from the module load, ahead of every SessionLoaded, and a mod may create
--- stats in one context that the other checks for (UAWarCaster).
+-- before either starts the second (lua_load_mods).
 --
--- The first half: the bootstraps if they have not run, then StatsLoaded --
--- only for stats loaded since the last one, as upstream fires it from
--- RPGStats::Load: a save load keeps the stats, and a stats pass run twice
--- appends twice.
+-- The first half: the bootstraps if they have not run. StatsLoaded fires here
+-- only if RPGStats::Load could not be hooked (StatsTakeLoaded is false
+-- otherwise); the hook fires it in the client, as upstream's does.
 function Ext._Internal.LoadModsBegin()
   Ext._Internal.LoadModScripts()
   if Ext.Stats.Get ~= nil and Ext._Internal.StatsCount() > 0
@@ -15942,6 +16138,9 @@ local function template_at(address, engineType)
   return out
 end
 
+-- For esv::Item::CreateCacheTemplate, which is defined before this.
+Ext._Internal.TemplateAt = template_at
+
 -- The managers besides the root one, as TemplateFindIn numbers them.
 local LOCAL, CACHE, LOCAL_CACHE = 1, 2, 3
 
@@ -16593,6 +16792,51 @@ void lua_load_client_scripts() {
     call_internal("LoadModScripts");
 }
 
+namespace {
+void fire_client_event(char const* name) {
+    if (g_client_lua == nullptr) return;
+    InContext client(Side::Client);
+    if (!client) return;
+    lua_State* L = g_lua;
+    const int top = lua_gettop(L);
+    lua_getglobal(L, "Ext");
+    if (lua_istable(L, -1)) lua_getfield(L, -1, "_Internal");
+    if (lua_istable(L, -1)) lua_getfield(L, -1, "FireEvent");
+    if (lua_isfunction(L, -1)) {
+        lua_pushstring(L, name);
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            logf("lua: client %s failed: %s", name, lua_tostring(L, -1));
+        }
+    }
+    lua_settop(L, top);
+}
+}  // namespace
+
+// Upstream's client RequestLuaReset: a fresh client state, the server untouched.
+void lua_reset_client() {
+    std::lock_guard<std::recursive_mutex> lock(g_client_lock);
+    imgui_api_reset();
+    bg3le_ui_reset();
+    lua_State* old = g_client_lua;
+    lua_State* was = t_lua;
+    g_client_lua = nullptr;
+    t_lua = nullptr;
+    if (old != nullptr) lua_close(old);
+    build_state(true);
+    t_lua = was == old ? nullptr : was;
+    logf("lua: client context rebuilt");
+}
+
+// ModuleLoadStarted is not fired: upstream throws it only into the
+// BootstrapModule.lua state it discards here, which bg3le does not run.
+void lua_stats_loaded() {
+    if (g_client_lua == nullptr) return;
+    lua_reset_client();
+    lua_load_client_scripts();
+    logf("lua: client StatsLoaded");
+    fire_client_event("StatsLoaded");
+}
+
 void lua_restore_persistent_vars() {
     if (g_server_lua == nullptr) return;
     InContext server(Side::Server);
@@ -16755,6 +16999,7 @@ void lua_tick() {
         serverState = now;
         if (was != nullptr) {
             logf("gamestate: server %s -> %s", was, now);
+            if (std::strcmp(was, "LoadModule") == 0) bg3le_stats_module_loaded();
             InContext server(Side::Server);
             if (server) {
                 lua_getglobal(g_lua, "Ext");

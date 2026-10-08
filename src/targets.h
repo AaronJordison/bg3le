@@ -25,6 +25,8 @@ std::uintptr_t FileReaderCtor();
 std::uintptr_t TextureManagerLoad();
 // ls::TextureManager::UnloadTexture(id): drops one
 std::uintptr_t TextureManagerUnload();
+// RPGStats::Load(paths), from its one call site
+std::uintptr_t StatsLoad();
 // the Wwise manager's SetSwitch
 std::uintptr_t WwiseSetSwitch();
 // stats functor parser
