@@ -2125,13 +2125,17 @@ void enum_arg_in_place(lua_State* L, int index, void const* meta,
     std::uint64_t value = 0;
     bool isBitmask = false;
     index = lua_absindex(L, index);
-    // An EnumValue stands for its label.
+    // An EnumValue stands for its label, a BitfieldValue for its value.
     if (lua_type(L, index) == LUA_TUSERDATA && lua_getmetatable(L, index)) {
         if (lua_getfield(L, -1, "__bg3leEnumLabel") == LUA_TSTRING) {
             lua_replace(L, index);
             lua_pop(L, 1);
-        } else {
+        } else if (lua_getfield(L, -2, "__bg3leBitfieldValue") == LUA_TNUMBER) {
+            lua_replace(L, index);
             lua_pop(L, 2);
+            return;
+        } else {
+            lua_pop(L, 3);
         }
     }
     const int type = lua_type(L, index);
@@ -2246,6 +2250,23 @@ bool push_enum(lua_State* L, void const* meta, const char* path,
         }
         lua_pushinteger(L, (lua_Integer)raw);
         return true;
+    }
+
+    // A BitfieldValue (Ext._Internal.BitfieldValue in the prelude), as
+    // upstream's push_bitfield_value; unnamed bits stay in its value.
+    if (char const* name = bg3le_meta_enum_lua_name(meta, path)) {
+        const int top = lua_gettop(L);
+        if (lua_getglobal(L, "Ext") == LUA_TTABLE
+            && lua_getfield(L, -1, "_Internal") == LUA_TTABLE
+            && lua_getfield(L, -1, "BitfieldValue") == LUA_TFUNCTION) {
+            lua_pushstring(L, name);
+            lua_pushinteger(L, (lua_Integer)raw);
+            lua_call(L, 2, 1);
+            lua_replace(L, top + 1);
+            lua_settop(L, top + 1);
+            return true;
+        }
+        lua_settop(L, top);
     }
 
     lua_newtable(L);
@@ -4018,6 +4039,17 @@ void read_imgui_args(lua_State* L, int first, ImguiArg* out,
             // other bg3le objects (entities) answer it too, so check the type.
             bool widget = false;
             if (lua_getmetatable(L, at)) {
+                // An EnumValue or BitfieldValue is its number, as upstream takes it.
+                if (lua_getfield(L, -1, "__bg3leEnumValue") == LUA_TNUMBER
+                    || (lua_pop(L, 1), lua_getfield(L, -1, "__bg3leBitfieldValue"))
+                           == LUA_TNUMBER) {
+                    arg.Kind = kImguiArgInt;
+                    arg.Int = (int)lua_tointeger(L, -1);
+                    arg.Number = lua_tonumber(L, -1);
+                    lua_pop(L, 2);
+                    break;
+                }
+                lua_pop(L, 1);
                 lua_getfield(L, -1, "__name");
                 char const* name = lua_tostring(L, -1);
                 widget = name != nullptr && std::strcmp(name, "ImguiHandle") == 0;
@@ -8706,6 +8738,174 @@ do
   end
 end
 
+-- Upstream's BitfieldValue (Lua/Shared/Proxies/LuaBitfieldValue.inl): a label
+-- indexes it as a boolean and a position as the n-th set label; __Labels,
+-- __Value and __EnumName; its length, iteration, tostring, & | ~ and
+-- equality. One per value, made on first read; __name is the bitfield's.
+do
+  local made, infos = {}, {}
+
+  -- Declaration order, label -> value, single bit -> label, every bit named.
+  local function info_of(name)
+    local info = infos[name]
+    if info ~= nil then return info end
+    info = {order = {}, byLabel = {}, byBit = {}, allowed = 0}
+    local i = 0
+    while true do
+      local label, value = Ext._Internal.EnumValueAt(name, i)
+      if label == nil then break end
+      info.order[#info.order + 1] = label
+      info.byLabel[label] = value
+      if info.byBit[value] == nil then info.byBit[value] = label end
+      info.allowed = info.allowed | value
+      i = i + 1
+    end
+    infos[name] = info
+    return info
+  end
+
+  -- The n-th set bit of the named flags, lowest first.
+  local function bit_at(info, value, n)
+    local v, i = value & info.allowed, 0
+    while v ~= 0 do
+      local low = v & -v
+      i = i + 1
+      if i == n then return low end
+      v = v & ~low
+    end
+    return nil
+  end
+
+  -- Another operand as a value of `name`, as upstream's get_bitfield_value.
+  local function operand(name, other, mask)
+    local info = info_of(name)
+    local v
+    if math.type(other) == "integer" then
+      if (other & ~info.allowed) == 0 then v = other
+      elseif mask then v = other & info.allowed end
+    elseif type(other) == "string" then
+      v = info.byLabel[other]
+    elseif type(other) == "table" then
+      v = 0
+      for _, label in pairs(other) do
+        local bit = info.byLabel[label]
+        if bit == nil then v = nil break end
+        v = v | bit
+      end
+    elseif type(other) == "userdata" then
+      local meta = Ext._Internal.RawGetMetatable(other)
+      if type(meta) == "table" and meta.__bg3leBitfieldName == name then
+        v = meta.__bg3leBitfieldValue
+      end
+    end
+    if v == nil then
+      error(string.format("not a valid '%s' bitfield value: %s", name, tostring(other)), 3)
+    end
+    return v
+  end
+
+  -- Either operand may be the bitfield.
+  local function binary(a, b, op, mask)
+    local meta = Ext._Internal.RawGetMetatable(a)
+    local other = b
+    if type(meta) ~= "table" or meta.__bg3leBitfieldName == nil then
+      meta, other = Ext._Internal.RawGetMetatable(b), a
+    end
+    local name = meta.__bg3leBitfieldName
+    return Ext._Internal.BitfieldValue(name,
+      op(meta.__bg3leBitfieldValue, operand(name, other, mask)))
+  end
+
+  function Ext._Internal.BitfieldValue(name, value)
+    local byValue = made[name]
+    if byValue == nil then
+      byValue = {}
+      made[name] = byValue
+    end
+    local hit = byValue[value]
+    if hit ~= nil then return hit end
+    local info = info_of(name)
+
+    local function labels()
+      local out = {}
+      for _, label in ipairs(info.order) do
+        local v = info.byLabel[label]
+        if v ~= 0 and (v & (v - 1)) == 0 and (value & v) == v then
+          out[#out + 1] = label
+        end
+      end
+      return out
+    end
+
+    hit = Ext._Internal.NewObjectProxy({
+      __name = name,
+      __bg3leBitfieldName = name,
+      __bg3leBitfieldValue = value,
+      __index = function(_, key)
+        if type(key) == "string" then
+          if key == "__Labels" then return labels() end
+          if key == "__Value" then return value end
+          if key == "__EnumName" then return name end
+          local v = info.byLabel[key]
+          if v == nil then
+            error(string.format("Bitfield of type '%s' has no enum label or special property named '%s'",
+                                name, key), 2)
+          end
+          return (value & v) == v
+        elseif type(key) == "number" then
+          local n = math.tointeger(key)
+          if n == nil or n < 1 then return nil end
+          local bit = bit_at(info, value, n)
+          return bit and info.byBit[bit]
+        end
+        error("Bitfield __index parameter must be an integer, enum label, or special property name; got "
+              .. type(key), 2)
+      end,
+      __len = function()
+        local v, n = value & info.allowed, 0
+        while v ~= 0 do v, n = v & (v - 1), n + 1 end
+        return n
+      end,
+      __pairs = function(self)
+        return function(_, k)
+          k = (k or 0) + 1
+          local bit = bit_at(info, value, k)
+          if bit == nil then return nil end
+          return k, info.byBit[bit]
+        end, self, nil
+      end,
+      __tostring = function()
+        local text = table.concat(labels(), ",")
+        local unknown = value & ~info.allowed
+        if unknown ~= 0 then
+          text = (text ~= "" and text .. "," or "") .. "Unknowns:" .. tostring(unknown)
+        end
+        return name .. "(" .. text .. ")"
+      end,
+      __eq = function(a, b)
+        local x, y = Ext._Internal.RawGetMetatable(a), Ext._Internal.RawGetMetatable(b)
+        return type(x) == "table" and type(y) == "table"
+               and x.__bg3leBitfieldName == y.__bg3leBitfieldName
+               and x.__bg3leBitfieldValue == y.__bg3leBitfieldValue
+      end,
+      __band = function(a, b) return binary(a, b, function(x, y) return x & y end, true) end,
+      __bor = function(a, b) return binary(a, b, function(x, y) return x | y end, false) end,
+      __bxor = function(a, b) return binary(a, b, function(x, y) return x ~ y end, false) end,
+      __bnot = function() return Ext._Internal.BitfieldValue(name, ~value & info.allowed) end,
+    })
+    byValue[value] = hit
+    return hit
+  end
+
+  -- A BitfieldValue's bitfield and value, or nil for anything else.
+  function Ext._Internal.BitfieldOf(v)
+    if type(v) ~= "userdata" then return nil end
+    local meta = Ext._Internal.RawGetMetatable(v)
+    if type(meta) ~= "table" or meta.__bg3leBitfieldName == nil then return nil end
+    return meta.__bg3leBitfieldName, meta.__bg3leBitfieldValue
+  end
+end
+
 -- A class's field table is fixed when bg3le is built, so it is made once:
 -- building it per object was most of a template's cost (33,806 of them in
 -- GetAllRootTemplates). Callers only read it.
@@ -8949,6 +9149,11 @@ stringify = function(v, indent, depth, ctx, out)
   elseif t == "userdata" and Ext._Internal.EnumLabelOf(v) ~= nil then
     -- Upstream's TryStringifyLightCppObject: an enum value is its label.
     out[#out + 1] = json_string(Ext._Internal.EnumLabelOf(v))
+  elseif t == "userdata" and Ext._Internal.BitfieldOf(v) ~= nil then
+    -- Upstream's StringifyBitfield: the set labels, as an array.
+    local parts = {}
+    for i, label in ipairs(v.__Labels) do parts[i] = json_string(label) end
+    out[#out + 1] = "[" .. table.concat(parts, ",") .. "]"
   elseif t == "table" or t == "userdata" then
     local meta = proxy_meta(v)
     if t == "table" and (meta == nil or meta.__pairs == nil) then
@@ -9715,22 +9920,25 @@ local function build_enum_names()
   if enum_names ~= nil then return enum_names end
   enum_names = {}
   for i = 0, Ext._Internal.EnumCount() - 1 do
-    local name = Ext._Internal.EnumAt(i)
-    if name ~= nil then enum_names[name] = true end
+    local name, isBitmask = Ext._Internal.EnumAt(i)
+    if name ~= nil then enum_names[name] = isBitmask and "bitfield" or "enum" end
   end
   return enum_names
 end
 
 local function build_enum(name)
   local made = {}
+  local bitfield = build_enum_names()[name] == "bitfield"
   local i = 0
   while true do
     local label, value = Ext._Internal.EnumValueAt(name, i)
     if label == nil then break end
     -- Both directions, as upstream does: the label names the entry and the
-    -- numeric value reaches the same one.
-    made[label] = label
-    made[value] = label
+    -- numeric value reaches the same one. A bitfield's entries are
+    -- BitfieldValues, as upstream's RegisterEnumeration makes them.
+    local entry = bitfield and Ext._Internal.BitfieldValue(name, value) or label
+    made[label] = entry
+    made[value] = entry
     i = i + 1
   end
   return made
@@ -9890,6 +10098,9 @@ local function value_type(object, base)
     if type(meta) == "table" and meta.__bg3leEnumName ~= nil then
       return base and "Enum" or meta.__bg3leEnumName
     end
+    if type(meta) == "table" and meta.__bg3leBitfieldName ~= nil then
+      return base and "Bitfield" or meta.__bg3leBitfieldName
+    end
     if type(meta) == "table" and type(meta.__name) == "string"
        and meta.__name ~= "EntityProxy" then
       return base and "CppObject" or meta.__name
@@ -9922,6 +10133,8 @@ local function deep_plain(value, seen)
   -- An enum value serializes as its label, as upstream's does.
   local label = Ext._Internal.EnumLabelOf(value)
   if label ~= nil then return label end
+  -- A bitfield stays one, as upstream's push(L, *obj) leaves it.
+  if Ext._Internal.BitfieldOf(value) ~= nil then return value end
   if not Ext._Internal.Walkable(value) then return value end
   if seen[value] then return seen[value] end
 
@@ -11609,6 +11822,8 @@ if Ext._Internal.IsClientState() then
   -- SDLKeyModifier label, list of labels or number.
   local function enum_number(enum, value, what)
     if type(value) == "number" then return math.tointeger(value) end
+    local _, bits = Ext._Internal.BitfieldOf(value)
+    if bits ~= nil then return bits end
     if type(value) == "table" then
       local bits = 0
       for _, label in ipairs(value) do bits = bits | enum_number(enum, label, what) end
