@@ -78,6 +78,27 @@ void SDLManager::DestroyUI()
 void SDLManager::NewFrame()
 {
     if (!enableUI_) return;
+
+    // The backend shows the OS cursor every frame, which undoes the game
+    // hiding it (controller input, for one). It may change the cursor only
+    // while the pointer is over the overlay; the game's is restored after.
+    static bool overOverlay = false;
+    static SDL_Cursor* gameCursor = nullptr;
+    static int gameCursorShown = SDL_ENABLE;
+    auto& io = ImGui::GetIO();
+    const bool over = io.WantCaptureMouse;
+    if (over && !overOverlay) {
+        gameCursor = SDL_GetCursor();
+        gameCursorShown = SDL_ShowCursor(SDL_QUERY);
+    } else if (!over && overOverlay) {
+        // SDL ignores a cursor the game has freed since.
+        if (gameCursor != nullptr) SDL_SetCursor(gameCursor);
+        SDL_ShowCursor(gameCursorShown);
+    }
+    overOverlay = over;
+    if (over) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    else io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
     ImGui_ImplSDL2_NewFrame();
 
     // After the backend, not before: see imgui_apply_injected_input.
