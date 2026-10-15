@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.11 (2026-10-14)
+
+- `Ext.Timer` runs on the game's own clock, as upstream does: the `GameTime` the engine hands each side's update.
+  bg3le counted wall-clock time before, so a mod's `WaitFor` delay could run out sooner than on Windows when the
+  game's clock fell behind real time. `WaitFor` and `WaitForRealtime` count from the last update and due timers
+  fire in upstream's order; `Ext.Timer.GameTime()` and the `Tick` event report the engine's time and delta. If
+  either hook can't be found after a game update, the log says so and timers fall back to the old clock.
+- Bitfields read as upstream's bitfield objects: a flags field, or an `Ext.Enums` bitfield entry, indexed by label
+  is `true` or `false`, and by number is the n-th set label, with `#`, `pairs`, `__Labels`, `__Value` and `&`, `|`,
+  `~` as upstream has them. They were plain lists of labels, so `Flags["Label"]` was always `nil`: MCM never saw
+  controller mode and did not show its gamepad notice. Plain enums are unchanged.
+- The mouse cursor hides again when you press a controller button. The overlay showed the cursor every frame
+  whether or not one of its windows was under the mouse; it now changes the cursor only over its own windows.
+
 ## v0.3.10 (2026-10-10)
 
 - Each mod's `BootstrapModule.lua` runs before the game loads its stats, and `ModuleLoadStarted` fires, as upstream
