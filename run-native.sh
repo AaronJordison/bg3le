@@ -22,12 +22,6 @@ SNIPER_DIR="$HOME/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper"
 export MANGOHUD="${MANGOHUD:-1}"
 export BG3LE_DUMP_DB="${BG3LE_DUMP_DB:-1}"  # temporary: structural dump
 
-# The bundled SDL2 prefers its wayland driver here and that path enumerates no
-# displays ("SDL_Init failed: The video driver did not add any displays" ->
-# CollectDisplayAdaptersAndDisplays: no displays found -> Die, every launch).
-# XWayland works: x11 unless the caller chose a driver.
-export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
-
 # Driver tuning, exported so it reaches the game inside the container.
 #
 # vk_x11_strict_image_count is a Mesa driconf option, and Mesa reads driconf
@@ -44,15 +38,25 @@ export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
 export RADV_PERFOPTS="${RADV_PERFOPTS:-async_compile}"
 export vk_x11_strict_image_count="${vk_x11_strict_image_count:-false}"
 
-# Wayland by default: a native surface rather than XWayland. Measurably
-# steadier GPU clocks and slightly better frametimes, and the bundled
-# libSDL2.so has the backend compiled in with libwayland-client present in the
-# sniper runtime. SDL_VIDEODRIVER=x11 forces XWayland back.
+# Video driver -- a PER-HOST choice, and its own entry here because getting it
+# wrong kills every launch ("SDL_Init failed: The video driver did not add any
+# displays" -> "CollectDisplayAdaptersAndDisplays: no displays found" -> Die at
+# ~5 s). Wayland is the default: a native surface, measurably steadier GPU
+# clocks than XWayland, and the bundled libSDL2.so has the backend compiled in
+# with libwayland-client present in the sniper runtime.
 #
-# This is a preference, not a fix. A Proton DX11 run and a Proton Vulkan run
-# share one windowing path and only one of them stuttered, so the stutter never
-# tracked the window system.
-export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland}"
+# The exception is aaron-main, where this same bundled SDL2's wayland path
+# enumerates no displays and XWayland (:1) is the working one. That was once
+# pinned unconditionally here, which then killed every launch on megan-pink
+# when her checkout moved onto this branch (2026-10-16). A caller that sets
+# SDL_VIDEODRIVER still wins on either host.
+if [ -z "${SDL_VIDEODRIVER:-}" ]; then
+    case "$(hostname -s)" in
+        aaron-main) SDL_VIDEODRIVER=x11 ;;
+        *)          SDL_VIDEODRIVER=wayland ;;
+    esac
+fi
+export SDL_VIDEODRIVER
 
 cd "$GAME"
 
