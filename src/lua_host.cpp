@@ -512,24 +512,27 @@ bool osi_is_builtin(osi::Function const& fn) {
 }
 
 void osi_helpers_for(osi::Function const& fn, std::string* out) {
-    // Which trailing parameters the engine fills in. Unknown means none, the
-    // same reading the call path takes.
+    // Which parameters the engine fills in. Unknown means none, the same
+    // reading the call path takes.
     const std::size_t total = fn.params.size();
     const std::size_t outs =
         fn.out_params >= 0 ? std::min((std::size_t)fn.out_params, total) : 0;
     const std::size_t ins = total - outs;
 
     std::string comment;
-    for (std::size_t i = 0; i < ins; ++i) {
+    std::size_t arg = 0;
+    for (std::size_t i = 0; i < total; ++i) {
+        if (fn.is_output(i, ins)) continue;
         comment += "--- @param arg";
-        comment += std::to_string(i + 1);
+        comment += std::to_string(++arg);
         comment += " ";
         comment += osi_lua_type(fn.params[i]);
         comment += "\r\n";
     }
 
     if (outs > 0) {
-        for (std::size_t i = ins; i < total; ++i) {
+        for (std::size_t i = 0; i < total; ++i) {
+            if (!fn.is_output(i, ins)) continue;
             comment += "--- @return ";
             comment += osi_lua_type(fn.params[i]);
             comment += "\r\n";
@@ -1520,13 +1523,22 @@ void* client_container() {
     return other != server ? other : nullptr;
 }
 
-// The world the running context reads, as upstream's client and server each
-// read their own: the client context gets the client world.
+extern "C" void* bg3le_context_container(bool client);
+
+// The world the running context reads, as upstream's GetEntityWorld(): the
+// client context the client's EntityWorld, the server context the server's,
+// each taken from its EoC object, so it is there from the main menu on. The
+// captured containers stand in only if that lookup fails.
 void* world_container() {
-    if (g_lua != nullptr && g_lua == g_client_lua) {
-        if (void* client = client_container()) return client;
+    const bool client = g_lua != nullptr && g_lua == g_client_lua;
+    if (void* own = bg3le_context_container(client)) return own;
+    static std::atomic<bool> warned[2] = {false, false};
+    void* captured = client && client_container() != nullptr ? client_container() : server_container();
+    if (captured != nullptr && !warned[client ? 1 : 0].exchange(true)) {
+        logf("ecs: the %s EntityWorld was not found from its EoC object; using a captured container",
+             client ? "client" : "server");
     }
-    return server_container();
+    return captured;
 }
 
 // Accepts either name a component goes by and yields the engine's.
@@ -2113,13 +2125,17 @@ void enum_arg_in_place(lua_State* L, int index, void const* meta,
     std::uint64_t value = 0;
     bool isBitmask = false;
     index = lua_absindex(L, index);
-    // An EnumValue stands for its label.
+    // An EnumValue stands for its label, a BitfieldValue for its value.
     if (lua_type(L, index) == LUA_TUSERDATA && lua_getmetatable(L, index)) {
         if (lua_getfield(L, -1, "__bg3leEnumLabel") == LUA_TSTRING) {
             lua_replace(L, index);
             lua_pop(L, 1);
-        } else {
+        } else if (lua_getfield(L, -2, "__bg3leBitfieldValue") == LUA_TNUMBER) {
+            lua_replace(L, index);
             lua_pop(L, 2);
+            return;
+        } else {
+            lua_pop(L, 3);
         }
     }
     const int type = lua_type(L, index);
@@ -2234,6 +2250,23 @@ bool push_enum(lua_State* L, void const* meta, const char* path,
         }
         lua_pushinteger(L, (lua_Integer)raw);
         return true;
+    }
+
+    // A BitfieldValue (Ext._Internal.BitfieldValue in the prelude), as
+    // upstream's push_bitfield_value; unnamed bits stay in its value.
+    if (char const* name = bg3le_meta_enum_lua_name(meta, path)) {
+        const int top = lua_gettop(L);
+        if (lua_getglobal(L, "Ext") == LUA_TTABLE
+            && lua_getfield(L, -1, "_Internal") == LUA_TTABLE
+            && lua_getfield(L, -1, "BitfieldValue") == LUA_TFUNCTION) {
+            lua_pushstring(L, name);
+            lua_pushinteger(L, (lua_Integer)raw);
+            lua_call(L, 2, 1);
+            lua_replace(L, top + 1);
+            lua_settop(L, top + 1);
+            return true;
+        }
+        lua_settop(L, top);
     }
 
     lua_newtable(L);
@@ -4006,6 +4039,17 @@ void read_imgui_args(lua_State* L, int first, ImguiArg* out,
             // other bg3le objects (entities) answer it too, so check the type.
             bool widget = false;
             if (lua_getmetatable(L, at)) {
+                // An EnumValue or BitfieldValue is its number, as upstream takes it.
+                if (lua_getfield(L, -1, "__bg3leEnumValue") == LUA_TNUMBER
+                    || (lua_pop(L, 1), lua_getfield(L, -1, "__bg3leBitfieldValue"))
+                           == LUA_TNUMBER) {
+                    arg.Kind = kImguiArgInt;
+                    arg.Int = (int)lua_tointeger(L, -1);
+                    arg.Number = lua_tonumber(L, -1);
+                    lua_pop(L, 2);
+                    break;
+                }
+                lua_pop(L, 1);
                 lua_getfield(L, -1, "__name");
                 char const* name = lua_tostring(L, -1);
                 widget = name != nullptr && std::strcmp(name, "ImguiHandle") == 0;
@@ -4976,7 +5020,7 @@ int l_loca_keys(lua_State* L) {
 // Sized from a first pass so the second cannot overrun, which matters
 // because entities come and go between the two on a live world.
 int l_all_entities(lua_State* L) {
-    // The server world, which is the one every other read here uses.
+    // The calling context's world, the one every other read here uses.
     // Enumerating ecs::container() instead handed back handles from
     // whichever world was captured first -- valid there, rejected by the
     // component readers, and so entirely unreadable.
@@ -6137,7 +6181,6 @@ int l_stats_extra_all(lua_State* L) {
 // PathOverrideGet(path) -> the absolute override, or nil
 extern "C" bool bg3le_path_override_add(char const* path, char const* overridePath);
 extern "C" char const* bg3le_path_override_get(char const* path);
-extern "C" void bg3le_path_override_clear();
 int l_path_override_add(lua_State* L) {
     lua_pushboolean(L, bg3le_path_override_add(luaL_checkstring(L, 1), luaL_checkstring(L, 2)));
     return 1;
@@ -6165,6 +6208,25 @@ int l_settings_flag(lua_State* L) {
     lua_pushboolean(L, bg3le_settings_flag(luaL_checkstring(L, 1),
                                            lua_toboolean(L, 2) != 0));
     return 1;
+}
+
+// Ext._Internal.EngineTime(client) -> Time, DeltaTime, Ticks, Unknown of that
+// side's last engine update; false before the first, nil if it is not hooked.
+extern "C" int bg3le_engine_time(bool client, double* time, float* delta, int* ticks,
+                                 double* unknown);
+int l_engine_time(lua_State* L) {
+    double time = 0.0, unknown = 0.0;
+    float delta = 0.0f;
+    int ticks = 0;
+    switch (bg3le_engine_time(lua_toboolean(L, 1) != 0, &time, &delta, &ticks, &unknown)) {
+    case 0: lua_pushnil(L); return 1;
+    case 1: lua_pushboolean(L, 0); return 1;
+    }
+    lua_pushnumber(L, time);
+    lua_pushnumber(L, delta);
+    lua_pushinteger(L, ticks);
+    lua_pushnumber(L, unknown);
+    return 4;
 }
 
 // Ext._Internal.StatsCreate(name, modifierList) -> address, or nil and why
@@ -8344,6 +8406,8 @@ void build_state(bool client) {
     lua_setfield(g_lua, -2, "StringKeySet");
     lua_pushcfunction(g_lua, l_settings_flag);
     lua_setfield(g_lua, -2, "SettingsFlag");
+    lua_pushcfunction(g_lua, l_engine_time);
+    lua_setfield(g_lua, -2, "EngineTime");
     lua_pushcfunction(g_lua, l_stats_type);
     lua_setfield(g_lua, -2, "StatsType");
     lua_pushcfunction(g_lua, l_stats_using);
@@ -8674,6 +8738,174 @@ do
   end
 end
 
+-- Upstream's BitfieldValue (Lua/Shared/Proxies/LuaBitfieldValue.inl): a label
+-- indexes it as a boolean and a position as the n-th set label; __Labels,
+-- __Value and __EnumName; its length, iteration, tostring, & | ~ and
+-- equality. One per value, made on first read; __name is the bitfield's.
+do
+  local made, infos = {}, {}
+
+  -- Declaration order, label -> value, single bit -> label, every bit named.
+  local function info_of(name)
+    local info = infos[name]
+    if info ~= nil then return info end
+    info = {order = {}, byLabel = {}, byBit = {}, allowed = 0}
+    local i = 0
+    while true do
+      local label, value = Ext._Internal.EnumValueAt(name, i)
+      if label == nil then break end
+      info.order[#info.order + 1] = label
+      info.byLabel[label] = value
+      if info.byBit[value] == nil then info.byBit[value] = label end
+      info.allowed = info.allowed | value
+      i = i + 1
+    end
+    infos[name] = info
+    return info
+  end
+
+  -- The n-th set bit of the named flags, lowest first.
+  local function bit_at(info, value, n)
+    local v, i = value & info.allowed, 0
+    while v ~= 0 do
+      local low = v & -v
+      i = i + 1
+      if i == n then return low end
+      v = v & ~low
+    end
+    return nil
+  end
+
+  -- Another operand as a value of `name`, as upstream's get_bitfield_value.
+  local function operand(name, other, mask)
+    local info = info_of(name)
+    local v
+    if math.type(other) == "integer" then
+      if (other & ~info.allowed) == 0 then v = other
+      elseif mask then v = other & info.allowed end
+    elseif type(other) == "string" then
+      v = info.byLabel[other]
+    elseif type(other) == "table" then
+      v = 0
+      for _, label in pairs(other) do
+        local bit = info.byLabel[label]
+        if bit == nil then v = nil break end
+        v = v | bit
+      end
+    elseif type(other) == "userdata" then
+      local meta = Ext._Internal.RawGetMetatable(other)
+      if type(meta) == "table" and meta.__bg3leBitfieldName == name then
+        v = meta.__bg3leBitfieldValue
+      end
+    end
+    if v == nil then
+      error(string.format("not a valid '%s' bitfield value: %s", name, tostring(other)), 3)
+    end
+    return v
+  end
+
+  -- Either operand may be the bitfield.
+  local function binary(a, b, op, mask)
+    local meta = Ext._Internal.RawGetMetatable(a)
+    local other = b
+    if type(meta) ~= "table" or meta.__bg3leBitfieldName == nil then
+      meta, other = Ext._Internal.RawGetMetatable(b), a
+    end
+    local name = meta.__bg3leBitfieldName
+    return Ext._Internal.BitfieldValue(name,
+      op(meta.__bg3leBitfieldValue, operand(name, other, mask)))
+  end
+
+  function Ext._Internal.BitfieldValue(name, value)
+    local byValue = made[name]
+    if byValue == nil then
+      byValue = {}
+      made[name] = byValue
+    end
+    local hit = byValue[value]
+    if hit ~= nil then return hit end
+    local info = info_of(name)
+
+    local function labels()
+      local out = {}
+      for _, label in ipairs(info.order) do
+        local v = info.byLabel[label]
+        if v ~= 0 and (v & (v - 1)) == 0 and (value & v) == v then
+          out[#out + 1] = label
+        end
+      end
+      return out
+    end
+
+    hit = Ext._Internal.NewObjectProxy({
+      __name = name,
+      __bg3leBitfieldName = name,
+      __bg3leBitfieldValue = value,
+      __index = function(_, key)
+        if type(key) == "string" then
+          if key == "__Labels" then return labels() end
+          if key == "__Value" then return value end
+          if key == "__EnumName" then return name end
+          local v = info.byLabel[key]
+          if v == nil then
+            error(string.format("Bitfield of type '%s' has no enum label or special property named '%s'",
+                                name, key), 2)
+          end
+          return (value & v) == v
+        elseif type(key) == "number" then
+          local n = math.tointeger(key)
+          if n == nil or n < 1 then return nil end
+          local bit = bit_at(info, value, n)
+          return bit and info.byBit[bit]
+        end
+        error("Bitfield __index parameter must be an integer, enum label, or special property name; got "
+              .. type(key), 2)
+      end,
+      __len = function()
+        local v, n = value & info.allowed, 0
+        while v ~= 0 do v, n = v & (v - 1), n + 1 end
+        return n
+      end,
+      __pairs = function(self)
+        return function(_, k)
+          k = (k or 0) + 1
+          local bit = bit_at(info, value, k)
+          if bit == nil then return nil end
+          return k, info.byBit[bit]
+        end, self, nil
+      end,
+      __tostring = function()
+        local text = table.concat(labels(), ",")
+        local unknown = value & ~info.allowed
+        if unknown ~= 0 then
+          text = (text ~= "" and text .. "," or "") .. "Unknowns:" .. tostring(unknown)
+        end
+        return name .. "(" .. text .. ")"
+      end,
+      __eq = function(a, b)
+        local x, y = Ext._Internal.RawGetMetatable(a), Ext._Internal.RawGetMetatable(b)
+        return type(x) == "table" and type(y) == "table"
+               and x.__bg3leBitfieldName == y.__bg3leBitfieldName
+               and x.__bg3leBitfieldValue == y.__bg3leBitfieldValue
+      end,
+      __band = function(a, b) return binary(a, b, function(x, y) return x & y end, true) end,
+      __bor = function(a, b) return binary(a, b, function(x, y) return x | y end, false) end,
+      __bxor = function(a, b) return binary(a, b, function(x, y) return x ~ y end, false) end,
+      __bnot = function() return Ext._Internal.BitfieldValue(name, ~value & info.allowed) end,
+    })
+    byValue[value] = hit
+    return hit
+  end
+
+  -- A BitfieldValue's bitfield and value, or nil for anything else.
+  function Ext._Internal.BitfieldOf(v)
+    if type(v) ~= "userdata" then return nil end
+    local meta = Ext._Internal.RawGetMetatable(v)
+    if type(meta) ~= "table" or meta.__bg3leBitfieldName == nil then return nil end
+    return meta.__bg3leBitfieldName, meta.__bg3leBitfieldValue
+  end
+end
+
 -- A class's field table is fixed when bg3le is built, so it is made once:
 -- building it per object was most of a template's cost (33,806 of them in
 -- GetAllRootTemplates). Callers only read it.
@@ -8917,6 +9149,11 @@ stringify = function(v, indent, depth, ctx, out)
   elseif t == "userdata" and Ext._Internal.EnumLabelOf(v) ~= nil then
     -- Upstream's TryStringifyLightCppObject: an enum value is its label.
     out[#out + 1] = json_string(Ext._Internal.EnumLabelOf(v))
+  elseif t == "userdata" and Ext._Internal.BitfieldOf(v) ~= nil then
+    -- Upstream's StringifyBitfield: the set labels, as an array.
+    local parts = {}
+    for i, label in ipairs(v.__Labels) do parts[i] = json_string(label) end
+    out[#out + 1] = "[" .. table.concat(parts, ",") .. "]"
   elseif t == "table" or t == "userdata" then
     local meta = proxy_meta(v)
     if t == "table" and (meta == nil or meta.__pairs == nil) then
@@ -9683,22 +9920,25 @@ local function build_enum_names()
   if enum_names ~= nil then return enum_names end
   enum_names = {}
   for i = 0, Ext._Internal.EnumCount() - 1 do
-    local name = Ext._Internal.EnumAt(i)
-    if name ~= nil then enum_names[name] = true end
+    local name, isBitmask = Ext._Internal.EnumAt(i)
+    if name ~= nil then enum_names[name] = isBitmask and "bitfield" or "enum" end
   end
   return enum_names
 end
 
 local function build_enum(name)
   local made = {}
+  local bitfield = build_enum_names()[name] == "bitfield"
   local i = 0
   while true do
     local label, value = Ext._Internal.EnumValueAt(name, i)
     if label == nil then break end
     -- Both directions, as upstream does: the label names the entry and the
-    -- numeric value reaches the same one.
-    made[label] = label
-    made[value] = label
+    -- numeric value reaches the same one. A bitfield's entries are
+    -- BitfieldValues, as upstream's RegisterEnumeration makes them.
+    local entry = bitfield and Ext._Internal.BitfieldValue(name, value) or label
+    made[label] = entry
+    made[value] = entry
     i = i + 1
   end
   return made
@@ -9858,6 +10098,9 @@ local function value_type(object, base)
     if type(meta) == "table" and meta.__bg3leEnumName ~= nil then
       return base and "Enum" or meta.__bg3leEnumName
     end
+    if type(meta) == "table" and meta.__bg3leBitfieldName ~= nil then
+      return base and "Bitfield" or meta.__bg3leBitfieldName
+    end
     if type(meta) == "table" and type(meta.__name) == "string"
        and meta.__name ~= "EntityProxy" then
       return base and "CppObject" or meta.__name
@@ -9890,6 +10133,8 @@ local function deep_plain(value, seen)
   -- An enum value serializes as its label, as upstream's does.
   local label = Ext._Internal.EnumLabelOf(value)
   if label ~= nil then return label end
+  -- A bitfield stays one, as upstream's push(L, *obj) leaves it.
+  if Ext._Internal.BitfieldOf(value) ~= nil then return value end
   if not Ext._Internal.Walkable(value) then return value end
   if seen[value] then return seen[value] end
 
@@ -11577,6 +11822,8 @@ if Ext._Internal.IsClientState() then
   -- SDLKeyModifier label, list of labels or number.
   local function enum_number(enum, value, what)
     if type(value) == "number" then return math.tointeger(value) end
+    local _, bits = Ext._Internal.BitfieldOf(value)
+    if bits ~= nil then return bits end
     if type(value) == "table" then
       local bits = 0
       for _, label in ipairs(value) do bits = bits | enum_number(enum, label, what) end
@@ -11807,21 +12054,46 @@ if Ext._Internal.IsClientState() then
     local method = methods[key]
     if method ~= nil then return method end
     local ptr = ptr_of[self]
+    -- A collection indexes from 1, as upstream's array proxy does.
+    if math.type(key) == "integer" and I.UiCollectionCount(ptr) ~= nil then
+      return wrap(I.UiCollectionItem(ptr, key))
+    end
     local getter = getters[key]
     if getter ~= nil then return getter(ptr) end
     local found, value = I.UiGet(ptr, key)
     if found then return out(value) end
-    error(no_property(ptr, key), 2)
+    -- Raised as upstream's LightObjectProxy does; only :GetProperty logs and returns nil.
+    error(string.format("Property does not exist: %s::%s - property does not exist",
+                        I.UiProxyTypeName(ptr), tostring(key)), 0)
   end
 
   UiObject.__newindex = function(self, key, value)
-    if not I.UiSet(ptr_of[self], key, unwrap(value)) then
-      error(no_property(ptr_of[self], key), 2)
+    local ptr = ptr_of[self]
+    if not I.UiSet(ptr, key, unwrap(value)) then
+      error(string.format("Cannot set property %s::%s - property does not exist",
+                          I.UiProxyTypeName(ptr), tostring(key)), 0)
     end
   end
 
   UiObject.__tostring = function(self)
     return string.format("%s (%s)", I.UiTypeName(ptr_of[self]), tostring(ptr_of[self]))
+  end
+
+  -- # and pairs over a collection's items; other objects keep reading as empty.
+  UiObject.__len = function(self)
+    return I.UiCollectionCount(ptr_of[self]) or 0
+  end
+
+  UiObject.__pairs = function(self)
+    local ptr = ptr_of[self]
+    local n = I.UiCollectionCount(ptr)
+    if n == nil then return next, {}, nil end
+    local i = 0
+    return function()
+      i = i + 1
+      if i > n then return nil end
+      return i, wrap(I.UiCollectionItem(ptr, i))
+    end
   end
 
   function Ext.UI.GetRoot() return wrap(I.UiRoot()) end
@@ -11995,18 +12267,14 @@ print = Ext.Log.Print
 
 -- ---- Ext.Timer ----
 --
--- Timers are driven from the server tick, so callbacks run on the story
--- thread and may call Osiris. Delays are in milliseconds, which is
--- upstream's unit: its WaitFor divides by a thousand before handing the
--- value to the engine's timer service.
---
--- Upstream keeps two queues, one on game time and one on wall clock, so a
--- game timer stops while the game is paused. bg3le has not located the
--- engine's clock, so both run on the monotonic clock and a game timer
--- keeps counting through a pause. The queues are kept apart regardless, so
--- the distinction becomes real the moment that clock is found rather than
--- needing every caller revisited.
+-- Server timers fire on the story thread, so callbacks may call Osiris.
+-- Delays are in milliseconds, upstream's unit. As upstream's, both queues
+-- run on the GameTime the engine hands that side's update: a delay counts
+-- from the last update (0 before a state's first), and a timer fires on the
+-- first update whose time has passed it. Unhooked, the monotonic clock stands in.
 local timers, next_handle = {}, 1
+-- The last update's GameTime, and its Time in milliseconds.
+local clock = {ms = 0.0, time = nil}
 
 -- Upstream marks realtime timers with a flag in the handle and reads it
 -- back to pick a queue; the same bit is used here for the same reason.
@@ -12021,7 +12289,7 @@ local function add_timer(ms, fn, repeat_ms, realtime)
   if realtime then handle = handle | REALTIME_FLAG end
 
   timers[handle] = {
-    due = Ext.Timer.MonotonicTime() + (ms or 0),
+    due = clock.ms + (ms or 0),
     fn = fn,
     every = repeat_ms,
     paused = false,
@@ -12050,7 +12318,7 @@ function Ext.Timer.Pause(handle)
     t.paused = true
     -- Held as remaining time, so resuming does not fire immediately for a
     -- timer that was paused past its due moment.
-    t.remaining = math.max(0, t.due - Ext.Timer.MonotonicTime())
+    t.remaining = math.max(0, t.due - clock.ms)
   end
   return true
 end
@@ -12060,7 +12328,7 @@ function Ext.Timer.Resume(handle)
   if t == nil then return false end
   if t.paused then
     t.paused = false
-    t.due = Ext.Timer.MonotonicTime() + (t.remaining or 0)
+    t.due = clock.ms + (t.remaining or 0)
     t.remaining = nil
   end
   return true
@@ -12154,7 +12422,7 @@ function Ext._Internal.CollectSaveExtras()
       end
     end
   end
-  local now = Ext.Timer.MonotonicTime()
+  local now = clock.ms
   for _, t in pairs(timers) do
     if t.persistent ~= nil then
       local remaining = t.paused and (t.remaining or 0) or math.max(0, t.due - now)
@@ -12203,19 +12471,10 @@ function Ext._Internal.RestoreSaveExtras()
   end
 end
 
--- Upstream reports the engine's game clock. bg3le counts from the first
--- tick instead, which is the same thing for measuring intervals and is not
--- the same thing across a load; it is seconds either way.
-local first_tick = nil
-
+-- The Time of the last update this state saw, as upstream's.
 function Ext.Timer.GameTime()
-  if first_tick == nil then return 0.0 end
-  return (Ext.Timer.MonotonicTime() - first_tick) / 1000.0
+  return clock.time ~= nil and clock.time.Time or 0.0
 end
-
--- Upstream's Tick carries the frame's delta; bg3le's tick is the timer
--- pump, so that is what it reports.
-local last_tick = nil
 
 function Ext._Internal.RunTimers()
   -- Anything the other context sent since the last tick, first: a message is
@@ -12233,27 +12492,38 @@ function Ext._Internal.RunTimers()
     Ext._Internal.DeliverComponentEvents()
   end
 
-  -- And the pathfinding requests the engine has finished.
-  if Ext._Internal.PathfindingUpdate then Ext._Internal.PathfindingUpdate() end
-
-  local now = Ext.Utils.MonotonicTime() / 1000.0
-  local delta = last_tick ~= nil and (now - last_tick) or 0.0
-  last_tick = now
-  -- Upstream's GameTime carries the tick count too (MazzleDocs reads it).
-  -- Kept on _Internal: the prelude has no top-level locals to spare.
-  Ext._Internal.TickCount = (Ext._Internal.TickCount or 0) + 1
-  Ext._Internal.FireEvent("Tick", { Time = { DeltaTime = delta, Time = now,
-    Ticks = Ext._Internal.TickCount } })
-
-  local now = Ext.Timer.MonotonicTime()
-  if first_tick == nil then first_tick = now end
+  -- The rest is upstream's OnUpdate, which runs once per engine update of
+  -- this side, with its GameTime: timers, pathfinding, then Tick.
+  local time, delta, ticks, unknown = Ext._Internal.EngineTime(Ext.IsClient())
+  if time == nil then
+    local now = Ext.Timer.MonotonicTime() / 1000.0
+    clock.first = clock.first or now
+    time = now - clock.first
+    delta = clock.time ~= nil and (time - clock.time.Time) or 0.0
+    ticks, unknown = (clock.time ~= nil and clock.time.Ticks or 0) + 1, 0.0
+  end
+  local last = clock.time
+  if time == false or (last ~= nil and last.Time == time and last.Ticks == ticks) then
+    return
+  end
+  clock.time = {Time = time, DeltaTime = delta, Ticks = ticks, Unknown = unknown}
+  clock.ms = time * 1000.0
+  local now = clock.ms
 
   -- Collected first: a callback that starts a timer adds to the table, and
-  -- adding a key mid-pairs is "invalid key to 'next'".
+  -- adding a key mid-pairs is "invalid key to 'next'". Upstream fires its
+  -- realtime queue, then its game queue, each soonest first.
   local due = {}
   for handle, t in pairs(timers) do
     if not t.paused and now >= t.due then due[#due + 1] = handle end
   end
+  table.sort(due, function(a, b)
+    local ra, rb = (a & REALTIME_FLAG) ~= 0, (b & REALTIME_FLAG) ~= 0
+    if ra ~= rb then return ra end
+    local x, y = timers[a].due, timers[b].due
+    if x ~= y then return x < y end
+    return a < b
+  end)
   for _, handle in ipairs(due) do
     local t = timers[handle]
     if t ~= nil then
@@ -12265,6 +12535,13 @@ function Ext._Internal.RunTimers()
       end
     end
   end
+
+  -- The pathfinding requests the engine has finished.
+  if Ext._Internal.PathfindingUpdate then Ext._Internal.PathfindingUpdate() end
+
+  -- TODO: Ticks and Unknown are upstream's misreading; see EngineTime in src/game_state.cpp.
+  Ext._Internal.FireEvent("Tick", {Time = {Time = time, DeltaTime = delta, Ticks = ticks,
+                                           Unknown = unknown}})
 end
 
 
@@ -12478,6 +12755,12 @@ read_path = function(handle, comp, path)
   return value
 end
 
+-- An array index as upstream reads it, with lua_tointeger: "2" and 2.0 are 2.
+function Ext._Internal.ArrayIndex(i)
+  local n = tonumber(i)
+  return n ~= nil and math.tointeger(n) or i
+end
+
 make_array = function(handle, comp, path)
   -- Raises rather than reporting zero, for the reason in make_map below: a
   -- failure to resolve must not read as an empty array.
@@ -12511,10 +12794,12 @@ make_array = function(handle, comp, path)
     -- Out of range is nil, as upstream's ArrayProxy answers, which is also
     -- what stops ipairs.
     __index = function(_, i)
+      i = Ext._Internal.ArrayIndex(i)
       if type(i) ~= "number" or i < 1 or i > length() then return nil end
       return element(i)
     end,
     __newindex = function(_, i, v)
+      i = Ext._Internal.ArrayIndex(i)
       local n = length()
       local ok, err
       if type(i) == "number" and ((v == nil and i >= 1 and i <= n) or i == n + 1) then
@@ -12528,6 +12813,8 @@ make_array = function(handle, comp, path)
             end
           end
         end
+      elseif type(i) == "number" and (i < 1 or i > n) then
+        return  -- upstream's SetElement refuses it, and its __newindex ignores that
       else
         ok, err = Ext._Internal.SetField(handle, comp, element_path(i), v)
       end
@@ -14185,8 +14472,11 @@ end
 local function snapshot_container(items, container, write, assign)
   return Ext._Internal.NewObjectProxy({
     __bg3leContainer = container,
-    __index = items,
-    __newindex = function(_, k, v) write(k, v) end,
+    __index = container == "array"
+              and function(_, k) return items[Ext._Internal.ArrayIndex(k)] end or items,
+    __newindex = function(_, k, v)
+      write(container == "array" and Ext._Internal.ArrayIndex(k) or k, v)
+    end,
     __len = container == "map" and function() return entry_count(items) end
             or function() return #items end,
     __pairs = function() return next, items, nil end,
@@ -14260,7 +14550,9 @@ local function read_object_path(addr, class, path, kind)
     local items = read_items({})
     local function write(k, v)
       local n = #items
-      if type(k) ~= "number" or k < 1 or k > n + 1 or (k == n + 1 and v == nil) then
+      -- Out of range is ignored, as upstream's array __newindex does.
+      if type(k) == "number" and (k < 1 or k > n + 1) then return end
+      if type(k) ~= "number" or (k == n + 1 and v == nil) then
         error("bg3le: " .. class .. "." .. path .. " index " .. tostring(k)
               .. " is out of range 1.." .. n, 0)
       end
@@ -14824,11 +15116,15 @@ local function create_mod_ext(moduleUuid, require_fn)
   return ext
 end
 
-local function load_mod_from(name, uuid, read, report)
+local function load_mod_from(name, uuid, read, report, boot)
+  -- boot is BootstrapModule.lua for the module-load state, else nil.
+  local preinit = boot ~= nil
   local config = read("Config.json")
   if not config then
-    Ext.Log.PrintWarning(string.format(
-      "bg3le: %s has no readable ScriptExtender/Config.json; skipped", name))
+    if not preinit then
+      Ext.Log.PrintWarning(string.format(
+        "bg3le: %s has no readable ScriptExtender/Config.json; skipped", name))
+    end
     return
   end
 
@@ -14842,8 +15138,10 @@ local function load_mod_from(name, uuid, read, report)
 
   local table_name = mod_table_name(config)
   if not table_name then
-    Ext.Log.PrintWarning(string.format(
-      "bg3le: %s has no ModTable in Config.json; skipping", name))
+    if not preinit then
+      Ext.Log.PrintWarning(string.format(
+        "bg3le: %s has no ModTable in Config.json; skipping", name))
+    end
     return
   end
   if uuid ~= nil then
@@ -14855,14 +15153,14 @@ local function load_mod_from(name, uuid, read, report)
   -- Each context runs its own bootstrap, as upstream does: the server
   -- state loads BootstrapServer.lua and the client state
   -- BootstrapClient.lua, and a mod that ships only one runs only there.
-  local boot = Ext.IsClient() and "BootstrapClient.lua" or "BootstrapServer.lua"
+  boot = boot or (Ext.IsClient() and "BootstrapClient.lua" or "BootstrapServer.lua")
   local source = read("Lua/" .. boot)
   if not source then return end
 
   -- Upstream names the script it is about to run, which is what tells you
   -- the order mods actually loaded in.
-  Ext.Log.Print(string.format(
-    "Loading bootstrap script: Mods/%s/ScriptExtender/Lua/%s", name, boot))
+  Ext.Log.Print(string.format("Loading %sbootstrap script: Mods/%s/ScriptExtender/Lua/%s",
+                              preinit and "preinit " or "", name, boot))
   local started = Ext.Utils.MonotonicTime()
 
   -- A mod's globals live in its own table, as upstream's do: writing
@@ -15145,9 +15443,12 @@ end
 -- (src/game_state.cpp) and for the server once Osiris is bound.
 local scripts_loaded = false
 
-function Ext._Internal.LoadModScripts()
-  if scripts_loaded then return end
-  scripts_loaded = true
+-- boot names another bootstrap to run instead (BootstrapModule.lua).
+function Ext._Internal.LoadModScripts(boot)
+  if boot == nil then
+    if scripts_loaded then return end
+    scripts_loaded = true
+  end
 
   for _, root in ipairs(mod_roots()) do
     local names = Ext._Internal.ListDir(root .. "/Mods")
@@ -15159,7 +15460,7 @@ function Ext._Internal.LoadModScripts()
         local uuid = string.match(meta,
           'id="UUID"%s+type="[%w]+"%s+value="([^"]+)"')
         load_mod_from(name, uuid,
-          function(path) return read_file(dir .. "/" .. path) end, nil)
+          function(path) return read_file(dir .. "/" .. path) end, nil, boot)
       end
     end
   end
@@ -15180,6 +15481,20 @@ function Ext._Internal.LoadModScripts()
     return a.Name < b.Name
   end)
 
+  local readers = {}
+  for _, module in ipairs(packed) do
+    local prefix = "Mods/" .. module.Name .. "/ScriptExtender/"
+    readers[module.Name] = function(path)
+      return Ext._Internal.PakRead(module.Pak, prefix .. path)
+    end
+  end
+  if boot ~= nil then
+    for _, module in ipairs(packed) do
+      load_mod_from(module.Name, module.Uuid, readers[module.Name], nil, boot)
+    end
+    return
+  end
+
   Ext.Log.Print(string.format(
     "bg3le: %d of %d packed script modules will load",
     #packed, #modules))
@@ -15187,12 +15502,7 @@ function Ext._Internal.LoadModScripts()
   -- Upstream lists what every mod asks of the extender before it runs any
   -- of them, then the merged view. Collected on a first pass so the list
   -- comes out whole rather than interleaved with the loading.
-  local readers = {}
   for _, module in ipairs(packed) do
-    local prefix = "Mods/" .. module.Name .. "/ScriptExtender/"
-    readers[module.Name] = function(path)
-      return Ext._Internal.PakRead(module.Pak, prefix .. path)
-    end
     local config = readers[module.Name]("Config.json")
     if config ~= nil then
       configs[#configs + 1] = {
@@ -15228,6 +15538,12 @@ function Ext._Internal.LoadModScripts()
     load_mod_from(module.Name, module.Uuid, readers[module.Name], nil)
   end
   mods_loaded = true
+end
+
+-- Upstream's LuaLoadPreinitBootstrap: each mod's BootstrapModule.lua, in the
+-- state the client builds just before the stats load.
+function Ext._Internal.LoadModuleBootstraps()
+  Ext._Internal.LoadModScripts("BootstrapModule.lua")
 end
 
 -- A session coming up, in two halves so that both contexts finish the first
@@ -16668,7 +16984,6 @@ end
         lua_pop(g_lua, 1);
     }
     run_sandbox();
-    bg3le_path_override_clear();
     statusf("LUA VM initialised (%s)", LUA_RELEASE);
 }
 
@@ -16827,8 +17142,24 @@ void lua_reset_client() {
     logf("lua: client context rebuilt");
 }
 
-// ModuleLoadStarted is not fired: upstream throws it only into the
-// BootstrapModule.lua state it discards here, which bg3le does not run.
+// Upstream's LoadExtensionState(Load) before RPGStats::Load: a fresh client
+// state runs each mod's BootstrapModule.lua, then ModuleLoadStarted.
+void lua_module_load_started() {
+    if (g_client_lua == nullptr) return;
+    lua_reset_client();
+    if (bg3le_mods_count() == 0) {
+        logf("lua: no module list yet; BootstrapModule.lua not run");
+        return;
+    }
+    {
+        InContext client(Side::Client);
+        if (!client) return;
+        call_internal("LoadModuleBootstraps");
+    }
+    fire_client_event("ModuleLoadStarted");
+}
+
+// The module-load state is discarded here for the game one, as upstream's is.
 void lua_stats_loaded() {
     if (g_client_lua == nullptr) return;
     lua_reset_client();

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 #include "hook.h"
@@ -26,14 +27,17 @@
 #include "stackdump.h"
 
 extern "C" void bg3le_stats_module_loaded();
+extern "C" void bg3le_templates_invalidate();
 extern "C" void bg3le_stats_load_hooked();
 extern "C" void bg3le_stats_loading(bool loading);
+extern "C" void bg3le_path_override_clear();
 #include "targets.h"
 
 namespace bg3le {
 
 void translated_string_show_version(char const* suffix);
 bool note_session_ended();
+void plugins_dispatch_frame();  // src/plugins.cpp
 
 // src/vendor/stats.cpp: whether the stats array has been (re)built since the last
 // StatsLoaded fire, per context, without recording it.
@@ -68,6 +72,56 @@ SetTargetStateProc g_set_target_state = nullptr;
 using StateProc = std::uint64_t (*)(void*, void*, void*, void*);
 StateProc g_load_module_exit = nullptr;
 std::atomic<bool> g_left_load_module{false};
+
+// The GameTime each side's update is handed, laid out as bg3se::GameTime.
+// Upstream's timers, Tick and Ext.Timer.GameTime all run on it.
+// TODO: both builds lay it out {double Time; float DeltaTime; float DeltaTime2;
+// int32 Ticks}, so upstream's Ticks is +0x0c's float bits and its Unknown holds
+// the real tick count. Kept as upstream reads it until bg3se fixes the struct.
+struct EngineTime {
+    double Time;
+    float DeltaTime;
+    std::int32_t Ticks;
+    double Unknown;
+};
+static_assert(sizeof(EngineTime) == 24);
+
+struct EngineClock {
+    std::mutex lock;
+    EngineTime time{};
+    bool hooked = false;
+    bool seen = false;
+};
+EngineClock g_clocks[2];  // client, server
+
+void note_engine_time(EngineClock& clock, void const* time, char const* side) {
+    if (time == nullptr) return;
+    EngineTime now;
+    std::memcpy(&now, time, sizeof(now));
+    bool first = false;
+    {
+        const std::lock_guard<std::mutex> held(clock.lock);
+        first = !clock.seen;
+        clock.time = now;
+        clock.seen = true;
+    }
+    if (first) logf("gametime: the %s's clock reads %.3f s, delta %.4f s", side, now.Time, now.DeltaTime);
+}
+
+// Upstream's client tick is a post-hook on GameStateMachine::Update, which
+// is inlined here; bg3le ticks later in this call, so the time is noted on entry.
+StateProc g_client_app_update = nullptr;
+std::uint64_t client_app_update_hook(void* app, void* time, void* c, void* d) {
+    note_engine_time(g_clocks[0], time, "client");
+    return g_client_app_update(app, time, c, d);
+}
+
+// Upstream's server tick is a pre-hook here.
+StateProc g_server_machine_update = nullptr;
+std::uint64_t server_machine_update_hook(void* machine, void* time, void* c, void* d) {
+    note_engine_time(g_clocks[1], time, "server");
+    return g_server_machine_update(machine, time, c, d);
+}
 
 char const* state_name(std::uint32_t state) {
     if (state >= kStateLimit || target::StateNames() == 0) return "Unknown";
@@ -350,11 +404,18 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
         // Upstream's client resets on UnloadSession and loads again leaving
         // LoadMenu; its server resets there too and loads at the next
         // LoadSession, which is the story work here.
+        // Upstream's client ResetExtensionState drops the path overrides here.
+        if (std::strcmp(now, "UnloadSession") == 0) bg3le_path_override_clear();
         if (std::strcmp(now, "UnloadSession") == 0 && note_session_ended()) {
             logf("gamestate: session unloaded; rebuilding the Lua states");
             lua_reset(false);
         }
-        if (std::strcmp(last, "LoadModule") == 0) bg3le_stats_module_loaded();
+        if (std::strcmp(last, "LoadModule") == 0) {
+            bg3le_stats_module_loaded();
+            bg3le_templates_invalidate();
+        }
+        // The engine frees its root templates from here until the load is done.
+        if (std::strcmp(now, "UnloadModule") == 0) bg3le_templates_invalidate();
         if (std::strcmp(last, "LoadMenu") == 0) {
             show_version_number();
             lua_load_client_scripts();
@@ -367,6 +428,7 @@ std::uint64_t machine_update_hook(void* machine, void* a, void* b, void* c) {
         lua_client_tick(nullptr, nullptr);
     }
     maybe_auto_continue(machine, now);
+    plugins_dispatch_frame();
     return result;
 }
 
@@ -376,6 +438,7 @@ StatsLoadProc g_stats_load = nullptr;
 // RPGStats::Load(paths), on the worker the client schedules it on.
 std::uint64_t stats_load_hook(void* paths, void* a, void* b, void* c) {
     logf("stats: RPGStats::Load starts");
+    lua_module_load_started();
     bg3le_stats_loading(true);
     const std::uint64_t result = g_stats_load(paths, a, b, c);
     logf("stats: RPGStats::Load done");
@@ -401,6 +464,21 @@ void set_target_state_hook(void* machine, void* state) {
 }
 
 }  // namespace
+
+// The last GameTime one side's update was handed: 0 if that update is not
+// hooked, 1 before it first runs, 2 with *time, *delta, *ticks and *unknown set.
+extern "C" int bg3le_engine_time(bool client, double* time, float* delta, int* ticks,
+                                 double* unknown) {
+    EngineClock& clock = g_clocks[client ? 0 : 1];
+    const std::lock_guard<std::mutex> held(clock.lock);
+    if (!clock.hooked) return 0;
+    if (!clock.seen) return 1;
+    *time = clock.time.Time;
+    *delta = clock.time.DeltaTime;
+    *ticks = clock.time.Ticks;
+    *unknown = clock.time.Unknown;
+    return 2;
+}
 
 char const* client_state_name() {
     char const* state = client_game_state();
@@ -474,6 +552,25 @@ void install_game_state_hook() {
     } else {
         logf("gamestate: ecl::GameStateMachine::Update not found; the client "
              "ticks with the server");
+    }
+
+    if (hook_slot(target::ClientAppUpdateSlot(), target::ClientAppUpdate(),
+                  reinterpret_cast<void*>(&client_app_update_hook), &original)) {
+        g_client_app_update = reinterpret_cast<StateProc>(original);
+        const std::lock_guard<std::mutex> held(g_clocks[0].lock);
+        g_clocks[0].hooked = true;
+    } else {
+        logf("gametime: ecl::EoCClient::Update not found; client timers run on the monotonic clock");
+    }
+    const std::uintptr_t server_update = target::ServerMachineUpdate();
+    if (server_update != 0
+        && hook_call_sites(server_update, reinterpret_cast<void*>(&server_machine_update_hook),
+                           &original) > 0) {
+        g_server_machine_update = reinterpret_cast<StateProc>(original);
+        const std::lock_guard<std::mutex> held(g_clocks[1].lock);
+        g_clocks[1].hooked = true;
+    } else {
+        logf("gametime: esv::GameStateMachine::Update not found; server timers run on the monotonic clock");
     }
 
     const std::uintptr_t stats_load = target::StatsLoad();

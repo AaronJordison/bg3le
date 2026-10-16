@@ -12,6 +12,7 @@
 // by Norbyte and the bg3se contributors (https://github.com/Norbyte/bg3se).
 
 #include <deque>
+#include <utility>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -347,8 +348,14 @@ void push_property(lua_State* L, BaseObject const* obj, TypeProperty const* prop
     auto objType = obj->GetClassType();
     auto ref = [&]() { return const_cast<void*>(property_address(prop, obj)); };
 
-    // A write-only property has nothing to read, through either accessor.
-    if (getter_missing(prop, 6) || getter_missing(prop, 7)) {
+    // Only the accessor this type is read through has to exist: a string property
+    // (ls.VMDiceStyle.Name) has its address getter and no copying one.
+    const bool byAddress = typeOfType == types.TypePtr.Type
+        || type == types.Color.Type || type == types.Rect.Type || type == types.Thickness.Type
+        || type == types.CornerRadius.Type || type == types.Vector2.Type || type == types.Point.Type
+        || type == types.Vector3.Type || type == types.ICommand.Type || type == types.String.Type
+        || type == types.Uri.Type || type == types.LocaString.Type;
+    if (getter_missing(prop, byAddress ? 6 : 7)) {
         lua_pushnil(L);
         return;
     }
@@ -718,6 +725,36 @@ int l_type_name(lua_State* L)
     return 1;
 }
 
+// The property map upstream pushes o with: its nearest type in FOR_EACH_NOESIS_TYPE.
+int l_proxy_type_name(lua_State* L)
+{
+    static constexpr std::pair<char const*, char const*> kTypes[] = {
+        {"BaseObject", "Noesis::BaseObject"}, {"BaseRefCounted", "Noesis::BaseRefCounted"},
+        {"BaseComponent", "Noesis::BaseComponent"}, {"Type", "Noesis::Type"},
+        {"TypeMeta", "Noesis::TypeMeta"}, {"TypeMetaData", "Noesis::TypeMetaData"},
+        {"TypeClass", "Noesis::TypeClass"}, {"BaseCommand", "Noesis::BaseCommand"},
+        {"LuaDelegateCommand", "Noesis::LuaDelegateCommand"},
+        {"DispatcherObject", "Noesis::DispatcherObject"},
+        {"DependencyObject", "Noesis::DependencyObject"},
+        {"DependencyData", "Noesis::DependencyData"}, {"Visual", "Noesis::Visual"},
+        {"UIElement", "Noesis::UIElement"}, {"UIElementData", "Noesis::UIElementData"},
+        {"FrameworkElement", "Noesis::FrameworkElement"}, {"Panel", "Noesis::Panel"},
+        {"ls.InitialSubstate", "ui::UIInitialSubstate"}, {"ls.StateEvent", "ui::UIStateEvent"},
+        {"ls.State", "ui::UIState"}, {"ls.UIWidget", "ui::UIWidget"}, {"ls.DCWidget", "ui::DCWidget"},
+    };
+    auto o = object_arg(L, 1);
+    for (auto t = o->GetClassType(); t != nullptr; t = t->GetBase()) {
+        for (auto const& [id, name] : kTypes) {
+            if (std::strcmp(t->GetName(), id) == 0) {
+                lua_pushstring(L, name);
+                return 1;
+            }
+        }
+    }
+    lua_pushstring(L, "Noesis::BaseObject");
+    return 1;
+}
+
 int l_to_string(lua_State* L)
 {
     auto o = object_arg(L, 1);
@@ -768,6 +805,22 @@ int l_collection_item(lua_State* L)
         }
     }
     return luaL_error(L, "%s is not a collection", obj != nullptr ? obj->GetClassType()->GetName() : "nil");
+}
+
+// How many items a Noesis collection holds, or nil when it is not one: upstream
+// pushes a collection as an array proxy, so Lua indexes it from 1 and takes #.
+int l_collection_count(lua_State* L)
+{
+    ensure_symbols();
+    auto obj = optional_object(L, 1);
+    for (auto t = obj != nullptr ? obj->GetClassType() : nullptr; t != nullptr; t = t->GetBase()) {
+        if (std::strcmp(t->GetName(), "BaseCollection") == 0) {
+            lua_pushinteger(L, static_cast<BaseCollection*>(static_cast<BaseComponent*>(obj))->Count());
+            return 1;
+        }
+    }
+    lua_pushnil(L);
+    return 1;
 }
 
 int l_visual_parent(lua_State* L)
@@ -1181,11 +1234,13 @@ extern "C" void bg3le_ui_register(lua_State* L)
     static const luaL_Reg functions[] = {
         {"UiRoot", Noesis::bg3le_ui::l_root},
         {"UiTypeName", Noesis::bg3le_ui::l_type_name},
+        {"UiProxyTypeName", Noesis::bg3le_ui::l_proxy_type_name},
         {"UiToString", Noesis::bg3le_ui::l_to_string},
         {"UiIsA", Noesis::bg3le_ui::l_is_a},
         {"UiVisualCount", Noesis::bg3le_ui::l_visual_count},
         {"UiVisualChild", Noesis::bg3le_ui::l_visual_child},
         {"UiCollectionItem", Noesis::bg3le_ui::l_collection_item},
+        {"UiCollectionCount", Noesis::bg3le_ui::l_collection_count},
         {"UiVisualParent", Noesis::bg3le_ui::l_visual_parent},
         {"UiChildCount", Noesis::bg3le_ui::l_child_count},
         {"UiChild", Noesis::bg3le_ui::l_child},

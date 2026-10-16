@@ -1,5 +1,75 @@
 # Changelog
 
+## v0.3.11 (2026-10-14)
+
+- `Ext.Timer` runs on the game's own clock, as upstream does: the `GameTime` the engine hands each side's update.
+  bg3le counted wall-clock time before, so a mod's `WaitFor` delay could run out sooner than on Windows when the
+  game's clock fell behind real time. `WaitFor` and `WaitForRealtime` count from the last update and due timers
+  fire in upstream's order; `Ext.Timer.GameTime()` and the `Tick` event report the engine's time and delta. If
+  either hook can't be found after a game update, the log says so and timers fall back to the old clock.
+- Bitfields read as upstream's bitfield objects: a flags field, or an `Ext.Enums` bitfield entry, indexed by label
+  is `true` or `false`, and by number is the n-th set label, with `#`, `pairs`, `__Labels`, `__Value` and `&`, `|`,
+  `~` as upstream has them. They were plain lists of labels, so `Flags["Label"]` was always `nil`: MCM never saw
+  controller mode and did not show its gamepad notice. Plain enums are unchanged.
+- The mouse cursor hides again when you press a controller button. The overlay showed the cursor every frame
+  whether or not one of its windows was under the mouse; it now changes the cursor only over its own windows.
+
+## v0.3.10 (2026-10-10)
+
+- Each mod's `BootstrapModule.lua` runs before the game loads its stats, and `ModuleLoadStarted` fires, as upstream
+  does, so path overrides a mod registers there take effect. Expansion uses one to swap its own stats file for an
+  empty one and makes the same changes from Lua; without it both applied, and Mobile and Defensive Blade Flourish
+  dealt no damage.
+- Mods' `StatsLoaded` handlers run on the first launch after a game update. bg3le found the mod list late without
+  its cache, after `StatsLoaded` had fired, so no mod's stat changes applied that session. It now reads the list
+  from the game's client, as upstream does.
+- Client Lua reads the client's entity world from the main menu on, and server Lua the server's. Mazzle_Lib's client
+  scripts failed to load with "the ECS container has not been captured yet".
+- Reading a property a UI object does not have raises upstream's "Property does not exist" error again; only
+  `:GetProperty()` logs and returns `nil`. This replaces the v0.3.8 change, which made Mazzle_Lib's per-frame UI
+  checks write thousands of "has no property named" lines to the log.
+
+## v0.3.9 (2026-10-09)
+
+- Arrays take a numeric string as an index, `"2"` meaning 2, and ignore a write past their end, as upstream does.
+  Appearance Edit Enhanced's Restore failed partway and left the hairstyle unrestored, and its Magic Mirror did
+  nothing for an origin whose appearance had never been edited.
+- String-typed UI properties read their value instead of `nil`: a dice style's `Name`, and the roll screen's text.
+  Dice Roulette's blacklist, weights, holidays and "avoid repeats" work again.
+
+## v0.3.8 (2026-10-09)
+
+- Reading a property a Noesis object does not have logs "Object X has no property named 'Y'" and returns `nil`,
+  as upstream does, instead of raising an error that ended the calling script. Writing one only logs too.
+
+## v0.3.7 (2026-10-09)
+
+- A Noesis collection reached from Lua, such as an element's `Children` or a view model's list, indexes from 1,
+  takes `#` and walks with `ipairs` and `pairs`, as upstream's array proxy does. Indexing one failed with "Object
+  UIElementCollection has no property named '1'", which broke Dice Roulette on every roll.
+
+## v0.3.6 (2026-10-08)
+
+- `Ext.Template` reads the right templates after loading a save with a different mod list. That load makes the
+  game rebuild every root template, and bg3le kept reading the old ones' freed memory: EasyCheat's Spawn Items
+  showed "?" icons, filed items under the wrong filters and failed to spawn them. The templates are now read
+  again whenever the client reloads its modules.
+- Osiris functions whose outputs are not their last parameters return them. `TemplateIsInPartyInventory`, whose
+  count is its third parameter of four, always returned 0, so Wye Fey Potions' proxies stayed at one and locked;
+  `TemplateIsInUserInventory` and `StartDialog_Internal` were wrong the same way. The first level load after
+  updating reads Osiris' signatures again, once.
+
+## v0.3.5 (2026-10-08)
+
+- A string, number or boolean assigned to a Noesis object property, such as `widget.Tag = "Test1"`, is boxed as the
+  game boxes it and reads back as assigned. It failed with "expected a Noesis object" (bg3se issue #603).
+- The ImGui overlay keeps one descriptor pool and sampler per device instead of leaking one of each every time the
+  window is resized. Binding and unbinding a texture take the overlay's lock, so neither reaches the ImGui backend
+  while the overlay is being rebuilt (bg3se issue #597).
+- Plugins can register a frame handler with `add_frame_handler`: called once per client frame, on the client's game
+  thread, with the seconds since the previous frame. It is a new field at the end of `bg3le_host`, so the ABI stays 1;
+  check `host->size` before using it.
+
 ## v0.3.4 (2026-10-07)
 
 - `esv::Item::CreateCacheTemplate` works, as upstream's: the item's template is cloned into the server's cache,
