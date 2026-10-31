@@ -41,19 +41,24 @@ export vk_x11_strict_image_count="${vk_x11_strict_image_count:-false}"
 # Video driver -- a PER-HOST choice, and its own entry here because getting it
 # wrong kills every launch ("SDL_Init failed: The video driver did not add any
 # displays" -> "CollectDisplayAdaptersAndDisplays: no displays found" -> Die at
-# ~5 s). Wayland is the default: a native surface, measurably steadier GPU
-# clocks than XWayland, and the bundled libSDL2.so has the backend compiled in
-# with libwayland-client present in the sniper runtime.
+# ~5 s). Wayland was megan-pink's proven path: a native surface, measurably
+# steadier GPU clocks than XWayland, and the bundled libSDL2.so has the backend
+# compiled in with libwayland-client present in the sniper runtime.
 #
-# The exception is aaron-main, where this same bundled SDL2's wayland path
-# enumerates no displays and XWayland (:1) is the working one. That was once
-# pinned unconditionally here, which then killed every launch on megan-pink
-# when her checkout moved onto this branch (2026-10-16). A caller that sets
-# SDL_VIDEODRIVER still wins on either host.
+# The Oct-23 -Syu (KWin 6.7.5 -> 6.8.1, mesa 26.2.3 -> 26.2.5, vulkan-icd-loader
+# 1.4.357 -> 1.4.363) broke the game's Wayland surface path on megan-pink: every
+# launch -- vanilla (no bg3le) and bg3le-preloaded alike -- SIGTRAPs ~2 s in at
+# bg3+0x75d915c (RIP lands in inter-function padding: a deterministic wild
+# jump), after bg3le logs the CreateDevice hooks. XWayland (:1) is unaffected:
+# the same binary reaches a full load with SDL_VIDEODRIVER=x11 (2026-10-31).
+# vkcube on the same Wayland session is fine, so it is the game's Wayland
+# client, not the compositor's Vulkan. bisect-from-here: downgrade mesa /
+# vulkan-icd-loader / kwin one at a time (sudo) to name the culprit; until then
+# both hosts take XWayland. A caller that sets SDL_VIDEODRIVER still wins.
 if [ -z "${SDL_VIDEODRIVER:-}" ]; then
     case "$(hostname -s)" in
-        aaron-main) SDL_VIDEODRIVER=x11 ;;
-        *)          SDL_VIDEODRIVER=wayland ;;
+        aaron-main|megan-pink) SDL_VIDEODRIVER=x11 ;;
+        *)                     SDL_VIDEODRIVER=wayland ;;
     esac
 fi
 export SDL_VIDEODRIVER
