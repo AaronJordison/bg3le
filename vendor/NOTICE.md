@@ -11,7 +11,7 @@ extender core and the code generators in this directory represent an enormous
 amount of reverse engineering. bg3le reuses them rather than rediscovering
 them, and would not be a realistic project otherwise.
 
-Upstream commit: `dc2530ab` (2026-09-23). Newer upstream commits are brought in
+Upstream commit: `af85fd2b`, tag `v33` (2026-10-12). Newer upstream commits are brought in
 by applying upstream's own diff over this tree, which keeps the changes listed
 below; regenerate the generated files afterwards.
 
@@ -412,6 +412,25 @@ atlas's texture as upstream does, so the engine keeps it while ImGui draws
 it. Only a texture the engine does not track is registered as it is, marked
 resident so no reference is dropped for it.
 
+**`Extender/Client/IMGUI/IMGUI.{h,cpp}` — the built-in fonts follow the
+game's language.** Upstream picks the font file and glyph ranges once, in
+`InitializeUI`, from `GlobalSwitches::Language`. bg3le can reach that point
+before it has found the engine's settings, on its own default with no
+language, which gave Russian players Latin-only fonts (MCM drew `????`).
+`InitializeUI`'s font block is now `LoadLanguageFonts`, which records the
+language it built for, and `Update` calls `RefreshFontLanguage`: when the
+language has changed, the built-in sizes without a font file of their own are
+dropped, the atlas is rebuilt as `UpdateStyle` rebuilds it, and the sizes for
+the new language are loaded. A font a mod loaded under a built-in name stays.
+
+**`Extender/Client/IMGUI/IMGUI.cpp` — a mod's own font gets its language's
+alphabet.** Upstream's `LoadFont` picks glyph ranges by language only for the
+built-in fonts; a font loaded from a file gets Latin only. MCM's Inter is such
+a font, so Russian MCM text drew as `????` once Inter was chosen. Russian and
+Ukrainian now add Cyrillic and Turkish adds its letters to every font; a font
+without those glyphs simply has none to add. CJK is left as upstream has it:
+its ranges are tens of thousands of glyphs per size.
+
 **`Lua/Libs/ClientUI/Builtins.inl` and `GameDefinitions/UI.h` — the Noesis
 functions go to the game's own copies.** Upstream links no Noesis library, so
 these reimplement `Reflection`, `SymbolManager`, `TypeClass`, `BaseCommand`
@@ -459,6 +478,15 @@ client Lua state's `DeferredUIEvents`, which bg3le does not have. Under
 a callback and, when the value changes, hands the object and property name to
 `src/vendor/bg3le_noesis_lua.inl`, which delivers them on the client tick as
 upstream's `PostUpdate` does. Checked by `tools/check-vendor-patches.py`.
+
+**`Lua/Libs/ClientUI/CustomProperties.inl` — a wrapped DataContext property
+registers its base with bg3le.** `TypePropertyDataContextWrapped` forwards
+`Get`/`GetCopy` to the base property in the headers' slot order, but the
+engine's two Get overloads sit in the opposite slots, and some engine
+properties register no getter at all. The constructor hands bg3le the wrapper
+and its base, and `src/vendor/bg3le_noesis_lua.inl` reads such a property as
+the base on the wrapped object, through its slot-aware accessors. Checked by
+`tools/check-vendor-patches.py`.
 
 **`Extender/Client/IMGUI/Vulkan.inl` — the overlay is composited onto an
 HDR swapchain.** Upstream draws ImGui straight into the swapchain; when the

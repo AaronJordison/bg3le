@@ -32,6 +32,8 @@ CHECKS = [
              and "field_F0_bg3le" in text("BG3Extender/GameDefinitions/UI.h")),
     ("custom property WriteCallback goes through bg3le's UI queue",
      lambda: "bg3le_ui_property_written(ptr, this->GetName().Str())" in text("BG3Extender/Lua/Libs/ClientUI/CustomProperties.inl")),
+    ("a wrapped DataContext property registers its base with bg3le",
+     lambda: "bg3le_ui_wrapped_property(this, baseProperty);" in text("BG3Extender/Lua/Libs/ClientUI/CustomProperties.inl")),
     ("ModifierList::Name in the manager's tail padding",
      lambda: "[[no_unique_address]] CNamedElementManager<Modifier> Attributes;" in text("BG3Extender/GameDefinitions/Stats/Stats.h")),
     ("entity handle generator grows by one page",
@@ -166,6 +168,12 @@ CHECKS = [
     ("icon atlases register their resident texture",
      lambda: "reinterpret_cast<TextureDescriptor*>(atlas->Texture)" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")
              and "bool Resident{ false };" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.h")),
+    ("the IMGUI built-in fonts are rebuilt when the language turns up",
+     lambda: "RefreshFontLanguage(); // bg3le" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")
+             and "fontLanguage_ = language;" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")
+             and "STDString fontLanguage_;" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.h")),
+    ("a mod's own IMGUI font gets its language's alphabet",
+     lambda: "// bg3le: a mod's own font gets its language's alphabet too" in text("BG3Extender/Extender/Client/IMGUI/IMGUI.cpp")),
     ("GlobalSwitches has this build's SoundSetting size and tail padding",
      lambda: "uint64_t field_58_bg3le;" in text("BG3Extender/GameDefinitions/Misc.h")
              and "uint64_t field_12F0_bg3le;" in text("BG3Extender/GameDefinitions/Misc.h")),

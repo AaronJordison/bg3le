@@ -15,8 +15,18 @@
 #include <GameDefinitions/Stats/Stats.h>
 #include <GameDefinitions/Stats/Prototype.h>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "../log.h"
 #include "../resolve.h"
@@ -485,7 +495,16 @@ extern "C" char const* bg3le_stats_sync(char const* name) {
     auto* object = (bg3se::stats::Object*)bg3le_stats_find(name);
     if (object == nullptr) return "no such stat";
     // The engine builds every prototype from the stats once RPGStats::Load returns.
-    if (bg3le_stats_is_loading()) return nullptr;
+    if (bg3le_stats_is_loading()) {
+        // Debug: who syncs during the load, and how often.
+        static std::atomic<unsigned> said{0};
+        const unsigned n = ++said;
+        if (n <= 20 || n % 500 == 0) {
+            logf("stats debug: Sync(%s) inside RPGStats::Load, left to the engine's prototype build (%u so far)",
+                 name, n);
+        }
+        return nullptr;
+    }
     char const* type = bg3le_stats_type(object);
     if (type == nullptr) return nullptr;
 

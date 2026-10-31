@@ -1,5 +1,88 @@
 # Changelog
 
+## v0.4.1 (2026-10-30)
+
+- The overlay's fonts are built for the game's language. They were built a few seconds after launch, before bg3le
+  had found the game's settings, so they held Latin letters only: Russian MCM text drew as `????`, and Korean,
+  Japanese and Chinese lost their fonts the same way. bg3le now finds the settings first, and rebuilds the fonts
+  if the language turns up later (#7, thanks to breitzer).
+- A font a mod loads from its own file, such as MCM's Inter, gets Cyrillic for Russian and Ukrainian and the
+  Turkish letters for Turkish. Upstream gives such fonts Latin only, so this goes beyond what Windows does.
+- A non-English install's own text is read. Steam keeps every language but English in a folder of its own
+  (`Data/Localization/Russian/Russian.pak`), which bg3le did not look in, so `Ext.Loca` had only the strings mods
+  ship. The gendered variants beside the base text (`russian_to_F.loca` and the like) are left out, as the engine
+  chooses between them.
+
+## v0.4.0-beta1 (2026-10-27)
+
+- Script Extender API v33. The vendored bg3se is upstream's v33, and what upstream changed in it is followed:
+  engine queries fire Osiris listeners, `Ext.Enums` entries are `EnumValue` objects, a `require` after a mod's
+  bootstrap raises, and argument errors read as upstream's and name the mod's line. The README lists what still
+  differs.
+- HomeBrew - Comprehensive Reworks runs: its difficulty menus, ability base values, spell filters, equipment
+  preview and appearance presets all work. bg3le gained Noesis collection writes, `TypeInfo()`, the widget fields,
+  `Ext.UI.Defer`, `Ext.IO.FindFiles` and Osiris enum out-params, all of which it uses.
+- Assigning a whole component or struct copies it in place, as upstream's does, so what a table cannot carry, such
+  as an animation variable's type, is kept.
+- `GenomeVariant`, `Version` and `EntityOrVec3` fields can be written, and component arrays can shrink and grow.
+
+## v0.3.15 (2026-10-25)
+
+- An optional enum field reads as its label and takes a label when written, as upstream's does.
+  `FeatRequirement.Ability`, an optional `AbilityId`, read back as a number, and writing `"Strength"` to it failed
+  with "number expected, got string". Path to Apotheosis' Epic Boon feat lock does that write from its `Tick`
+  handler, so it failed about four times a second for the whole session.
+- Writing a list of flag lists into a bitfield array works. Trials Ascension's
+  `Resistances.Resistances = { { "ImmuneToMagical", "ImmuneToNonMagical" }, ... }` wrote the array and then failed
+  with "attempt to index a ResistanceBoostFlags value": bg3le went on to fill each bitfield value as if it were a
+  struct. Enum and bitfield values are written whole, after an array write and in `Ext.Types.Unserialize`.
+
+## v0.3.14 (2026-10-21)
+
+- Stats load in full on every launch. About one launch in three loaded only part of them, anywhere from 2,000 to
+  12,000 of 24,000, and every mod's `StatsLoaded` handler then failed on stats that were missing. The engine's
+  stats parser tokenises with `strtok`, which keeps one position for the whole process, and bg3le called `strtok`
+  on another thread during the load, cutting the parse short. bg3le uses `strtok_r` now.
+- Attacks roll again after loading a save that reloads the stats, when a mod has changed `SpellRoll` on a spell
+  during the main menu's load. bg3le stored the roll's names without taking a reference, as upstream's
+  `FixedString` copy does, and the engine released them when it freed the menu's stats. After that every attack
+  hit, `IsAttack()` and `IsMeleeAttack()` were false, and effects that check them, such as Hex's damage and Armor
+  of Agathys's retaliation, did nothing.
+- The stats are found at the end of the main menu's load even when the engine adds the strings bg3le looks for
+  into its string table's free slots. bg3le's index of that table missed them, the stats search failed, and the
+  mods' `StatsLoaded` handlers ran against no stats.
+- An empty condition is no condition, as upstream's `GetOrCreateConditions` returns, and an empty `SpellRoll`
+  entry is dropped. A condition a mod sets that the engine already holds reuses its slot, as upstream does.
+- `Ext.Stats` `Sync()` works from the start of a session. Each of the engine's prototype managers is kept as soon
+  as it is found, instead of all four having to resolve together, so a launch where the spell manager was not
+  ready could no longer leave `Sync()` failing with "the passive prototype manager is not located".
+- GameThread and the loading threads the engine puts on its core keep their pins; every other engine thread still
+  runs on any core.
+- The overlay uploads its font texture while the game presents, and waits for its own GPU work before the game
+  rebuilds its swapchain.
+- More logging around swapchains, presents, memory, the display environment and thread pinning, for display
+  problems on handhelds and TVs.
+- Building with `tools/build-sniper.sh` no longer needs libc++ on the host (#5, thanks to sashage).
+
+## v0.3.13 (2026-10-17)
+
+- `Ext.Entity.GetEntitiesAroundPosition` reads the engine's spatial grid, as upstream does, so it returns only the
+  world's characters and items, measured across the ground, and honours `includeCharacters` and `includeItems`.
+  bg3le returned every entity with a position in range, scenery and effects included, so code reading each result's
+  UUID failed on the ones that have none.
+- Key events with more than one modifier reach `KeyInput` handlers again, with `Modifiers` as an `SDLKeyModifier`
+  bitfield, as upstream has it. Since v0.3.11 a key pressed with Shift, Ctrl or Alt while Num Lock was on failed
+  with "attempt to compare two SDLKeyModifier values" before any handler ran.
+
+## v0.3.12 (2026-10-17)
+
+- A mod's `Info.ModVersion` and `PublishVersion` are a new table on every read, as upstream's are. bg3le handed
+  every caller the same table, so a mod that removed the build number from its copy left three parts for everyone
+  else, and code formatting the version as four numbers failed. Dependency, conflict and addon entries get the same.
+- Assigning a list of tables to an array on a resource object fills in each element, as upstream does. bg3le
+  resized the array but left every struct element empty and still reported success: a `CharacterVisual`'s
+  `VisualSet.Slots` lost each slot's name, bone and visual, and the model drew without its head.
+
 ## v0.3.11 (2026-10-14)
 
 - `Ext.Timer` runs on the game's own clock, as upstream does: the `GameTime` the engine hands each side's update.

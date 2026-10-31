@@ -12,10 +12,12 @@
 #include "game_state.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <pthread.h>
 #include <string>
 
 #include "hook.h"
@@ -32,6 +34,7 @@ extern "C" void bg3le_stats_load_hooked();
 extern "C" void bg3le_stats_loading(bool loading);
 extern "C" void bg3le_path_override_clear();
 #include "targets.h"
+#include "version.h"
 
 namespace bg3le {
 
@@ -354,8 +357,8 @@ void maybe_auto_continue(void* machine, char const* now) {
 // ecl::ScriptExtender::ShowVersionNumber, queued until the copyright
 // string is in the repository.
 void show_version_number() {
-    std::string text = "\r\nbg3le loaded, Script Extender v32 API, built on " __DATE__
-                       " " __TIME__ ".";
+    std::string text = "\r\nbg3le loaded, Script Extender v" + std::to_string(kExtenderApiVersion)
+                       + " API, built on " __DATE__ " " __TIME__ ".";
     if (log_previous_crash()[0] != '\0') {
         text += "\r\nThe last run crashed. Its log is ";
         text += log_previous_crash();
@@ -437,11 +440,20 @@ StatsLoadProc g_stats_load = nullptr;
 
 // RPGStats::Load(paths), on the worker the client schedules it on.
 std::uint64_t stats_load_hook(void* paths, void* a, void* b, void* c) {
-    logf("stats: RPGStats::Load starts");
+    static std::atomic<unsigned> loads{0};
+    const unsigned load = ++loads;
+    char thread[32] = "?";
+    pthread_getname_np(pthread_self(), thread, sizeof(thread));
+    char const* client = client_game_state();
+    char const* server = server_game_state();
+    logf("stats: RPGStats::Load starts (load #%u on thread %s; client %s, server %s)", load, thread,
+         client != nullptr ? client : "unknown", server != nullptr ? server : "unknown");
     lua_module_load_started();
     bg3le_stats_loading(true);
+    const auto started = std::chrono::steady_clock::now();
     const std::uint64_t result = g_stats_load(paths, a, b, c);
-    logf("stats: RPGStats::Load done");
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    logf("stats: RPGStats::Load done (load #%u, %.2f s)", load, secs);
     bg3le_stats_module_loaded();
     lua_stats_loaded();
     bg3le_stats_loading(false);

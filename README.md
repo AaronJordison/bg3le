@@ -27,8 +27,9 @@ component's declared size with the size the engine recorded, and
 
 ## What works
 
-bg3le implements the public `Ext` API of bg3se on the native build: every
-function upstream registers is present in both contexts
+bg3le implements the public `Ext` API of bg3se, at its API version 33, on
+the native build: every function upstream registers is present in both
+contexts
 (`tools/check-api.sh`, against upstream's own module declarations), and
 `tools/count-refusals.py` finds none that refuse.
 It is checked against output captured from the Windows extender
@@ -84,7 +85,8 @@ structure was found, and what was measured, is in
 - **Fixes for the native build itself**: level loads from 65–98 s to about
   1 s ([reference/SLOW-LOAD-DIAGNOSIS.md](reference/SLOW-LOAD-DIAGNOSIS.md)),
   an eGPU endgame save from 30 to 71 fps (also usable on its own, see
-  [MEMSTEER.md](MEMSTEER.md)), the engine's thread pinning undone, and mod
+  [MEMSTEER.md](MEMSTEER.md)), the engine's thread pinning undone except on
+  GameThread's core, and mod
   archives corrected for what only Linux trips over (below).
 - **Native plugins**: shared libraries dropped in
   `~/.local/share/bg3le/plugins` load with the game, no launch option
@@ -104,9 +106,16 @@ structure was found, and what was measured, is in
 - Multiplayer has been tested over the game's own loopback (single player
   with `Ext._Internal.NetForceRemote(true)`), not yet against a second
   machine or a Windows player running bg3se. Reports welcome.
-- Two deliberate differences: a `require` after a mod has finished loading
-  still works (upstream errors), and `Ext.Enums` entries are labels rather
-  than `EnumValue` objects.
+- Where bg3le still differs from v33:
+  - `Ext.Stats.Get` returns a table with a metatable, so `type()` says
+    `table` where upstream's says `userdata`.
+  - A `GenomeVariant` with no type yet, such as one a resize appends, cannot
+    be given a value: upstream looks the type up in an engine registry
+    bg3le has not found. Typed ones read and write as upstream's do.
+  - A set of structs can be assigned only the contents it already has, since
+    bg3le cannot hash every key type to rebuild one.
+  - One-frame component events are watched as upstream watches them, but the
+    engine raised none in testing, so their delivery is unverified.
 
 ## Building
 
@@ -168,7 +177,9 @@ inside.
     tools/build-sniper.sh   # build-sniper/bg3le/libbg3le.so
     tools/package.sh        # dist/bg3le-<version>-linux-x86_64.zip
 
-`build-sniper.sh` needs Docker. It unpacks the sniper SDK image as a sysroot,
+`build-sniper.sh` needs Docker, clang, CMake, Ninja and Git. It fetches dependency
+sources without building against the host libc++, so no host libc++ installation
+is required. It unpacks the sniper SDK image as a sysroot,
 builds libc++ (from the LLVM release matching the host clang), abseil and
 protobuf against it, then bg3le with the host's clang
 (`cmake/sniper-toolchain.cmake`), and fails if the result asks for any glibc

@@ -10,11 +10,17 @@
 // wins over a packed one the way it does for the engine.
 
 #include <string>
+#include <vector>
 
 namespace bg3le {
 
 // The install's Data directory, derived from the running executable.
 std::string const& game_data_root();
+
+// The language the install is configured for, from
+// Data/Localization/language.lsx; "English" when that cannot be read. Its
+// archives are in Data/Localization/<Language>/, except English's.
+std::string const& game_language();
 
 // The contents of a Data-relative path, e.g.
 // "Public/Game/GUI/Assets/Fonts/QuadraatOffcPro/QuadraatOffcPro.ttf".
@@ -26,6 +32,9 @@ bool game_file_read(char const* relative, std::string* out);
 
 // Whether the path exists, without reading it.
 bool game_file_exists(char const* relative);
+
+// Every packed path that starts with prefix, in path order.
+std::vector<std::string> game_files_under(std::string const& prefix);
 
 // A file under Mods/ inside an installed mod's archive (src/ext_libs.cpp).
 bool mod_file_read(char const* relative, std::string* out);
