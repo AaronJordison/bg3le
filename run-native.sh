@@ -63,6 +63,22 @@ if [ -z "${SDL_VIDEODRIVER:-}" ]; then
 fi
 export SDL_VIDEODRIVER
 
+# X11 needs a display to bind, and SSH-driven launches (the boot-test driver,
+# stream-switch, any timer) inherit none: without this the x11 path dies at
+# SDL_Init with "x11 not available" instead of booting. Discover the session's
+# Xwayland the way services/game-streaming.md documents it. A caller that sets
+# DISPLAY still wins.
+if [ "${SDL_VIDEODRIVER}" = "x11" ] && [ -z "${DISPLAY:-}" ]; then
+    XW_LINE="$(pgrep -a -x Xwayland | head -1 || true)"
+    if [ -n "$XW_LINE" ]; then
+        DISPLAY="$(printf '%s\n' "$XW_LINE" | sed -nE 's#^[0-9]+ /usr/(bin/)?Xwayland (:[0-9]+).*#\2#p')"
+        XAUTHORITY="$(printf '%s\n' "$XW_LINE" | sed -nE 's#.* -auth ([^ ]+).*#\1#p')"
+        export DISPLAY XAUTHORITY
+    else
+        printf 'run-native: SDL_VIDEODRIVER=x11 but no DISPLAY and no Xwayland found\n' >&2
+    fi
+fi
+
 cd "$GAME"
 
 # Without steam_appid.txt beside the binary, libsteam_api does not know which
