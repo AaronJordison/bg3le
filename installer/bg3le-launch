@@ -7,12 +7,20 @@
 # again inside the container with --inject, so the preload reaches bin/bg3
 # and nothing else in the chain (gamescope breaks with it, see run-native.sh).
 
+# HOUSE DELTA (Aaron/bg3le) — not upstream: the frame-stall shim is part of the
+# house launch chain (see run-native.sh), and the Steam path is the only route
+# that reaches the game without it. Overridable, and absent hosts run unchanged
+# rather than failing on a missing .so.
+unstall="${BG3LE_UNSTALL:-$HOME/bg3-tools/bg3-unstall.so}"
+[ -f "$unstall" ] || unstall=
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 if [ "$1" = "--inject" ]; then
     shift
-    # Appended, so the Steam overlay's own preload stays.
-    LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$root/lib/libbg3le.so"
+    # Appended, so the Steam overlay's own preload stays. The shim goes first:
+    # it must wrap the game's own entry, not the extender's hooks.
+    LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}${unstall:+$unstall:}$root/lib/libbg3le.so"
     export LD_PRELOAD
     exec "$@"
 fi
@@ -36,6 +44,7 @@ done
 {
     if [ -n "$found" ]; then
         echo "bg3le: preloading into $found"
+        echo "bg3le: preload ${unstall:+$unstall + }$root/lib/libbg3le.so"
     else
         echo "bg3le: no bin/bg3 in the command, running it unchanged"
     fi
